@@ -73,7 +73,19 @@ async function isAncestor(repo: string, ancestor: string, descendant: string): P
 export async function addWorkspace(repo: string, workspace: Workspace, commit: string): Promise<void> {
   // jj creates the workspace directory itself but not its parent.
   mkdirSync(dirname(workspace.path), { recursive: true })
-  await jj(repo, ['-R', repo, 'workspace', 'add', '--name', workspace.name, '-r', commit, workspace.path])
+  // Never a Git worktree, even in a colocated repository: the task environment and the developer prompt count on no .git.
+  await jj(repo, [
+    '-R',
+    repo,
+    'workspace',
+    'add',
+    '--no-colocate',
+    '--name',
+    workspace.name,
+    '-r',
+    commit,
+    workspace.path,
+  ])
 }
 
 export async function removeWorkspace(repo: string, workspace: Workspace): Promise<void> {

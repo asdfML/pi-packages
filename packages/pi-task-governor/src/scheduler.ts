@@ -87,7 +87,8 @@ export function createScheduler(host: Host, notify: (message: string, wake: bool
         model,
         thinking,
         tools: EXECUTOR_TOOLS,
-        args: ['--no-approve', `--${STORE_FLAG}`, store],
+        // `--tools` alone keeps MCP tools, which the executor's fixed tool set leaves out.
+        args: ['--no-approve', '--no-mcp', `--${STORE_FLAG}`, store],
         // So what would ask in the executor, or in its developers and reviewers, is answered by the coordinator.
         parentSessionId: state.lease!.sessionId,
       })

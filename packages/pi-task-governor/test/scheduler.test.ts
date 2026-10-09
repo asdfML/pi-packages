@@ -76,7 +76,7 @@ describe('scheduler', () => {
     expect(launched).toMatchObject({
       cwd: claim.workspace.path,
       sessionId: claim.sessionId,
-      args: ['--no-approve', '--governor-store', store],
+      args: ['--no-approve', '--no-mcp', '--governor-store', store],
     })
     expect(launched.prompt).toContain('T1: Fix the parser')
     // Executors orchestrate; only their developers change code.

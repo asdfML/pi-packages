@@ -40,6 +40,7 @@ export function permissionDetails(overrides: Partial<PromptPermissionDetails> = 
         invokedToolName: null,
         value: 'pnpm publish',
         matchedPattern: 'pnpm publish*',
+        matchedSpelling: null,
         commandContext: null,
         executedUnit: null,
       },
