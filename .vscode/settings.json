@@ -8,6 +8,5 @@
   "editor.codeActionsOnSave": {
     "source.fixAll.oxc": "explicit",
     "source.organizeImports": "never"
-  },
-  "git.enabled": false
+  }
 }

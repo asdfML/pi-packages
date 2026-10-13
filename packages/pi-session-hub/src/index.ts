@@ -1,6 +1,6 @@
 import type { Mail } from './mailbox.js'
 import type { SessionRecord } from './registry.js'
-import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent'
 import type { Server } from 'node:net'
 import process from 'node:process'
 import { listenForMail, MAIL_EVENT, readQueue, removeMail, stopListening } from './mailbox.js'
@@ -34,20 +34,43 @@ function toMessage(mail: Mail): MailMessage {
 
 export default function sessionHub(pi: ExtensionAPI): void {
   let current: { record: SessionRecord; server: Server | undefined } | undefined
-  // Mail handed to Pi but not yet in the session file. Its queue file goes once message_end shows it written.
-  const pending = new Map<string, Mail>()
+  // Ids of mail handed to Pi whose queue files are still there.
+  const pending = new Set<string>()
 
   function deliver(sessionId: string, startTurns: boolean): void {
     for (const mail of readQueue(sessionId)) {
       if (pending.has(mail.id)) {
         continue
       }
-      pending.set(mail.id, mail)
+      pending.add(mail.id)
       pi.sendMessage(
         toMessage(mail),
-        startTurns && mail.wake ? { triggerTurn: true, deliverAs: 'steer' } : { deliverAs: 'nextTurn' },
+        startTurns && mail.wake ? { triggerTurn: true, deliverAs: 'steer' } : { triggerTurn: false },
       )
       pi.events.emit(MAIL_EVENT, mail)
+    }
+  }
+
+  // A queue file goes only once the session holds its mail: Pi sends extensions no message_end for mail written without a turn, and quitting mid-turn drops what it has not written yet.
+  function confirm(ctx: ExtensionContext): void {
+    const queued = readQueue(ctx.sessionManager.getSessionId())
+    if (queued.length === 0) {
+      return
+    }
+    const written = new Set(
+      ctx.sessionManager
+        .getEntries()
+        .flatMap(entry =>
+          entry.type === 'custom_message' && entry.customType === MESSAGE_TYPE
+            ? [(entry.details as MailDetails).mailId]
+            : [],
+        ),
+    )
+    for (const mail of queued) {
+      if (written.has(mail.id)) {
+        removeMail(mail)
+        pending.delete(mail.id)
+      }
     }
   }
 
@@ -67,20 +90,7 @@ export default function sessionHub(pi: ExtensionAPI): void {
       pid: process.pid,
     }
     registerSession(record)
-    const written = new Set(
-      ctx.sessionManager
-        .getEntries()
-        .flatMap(entry =>
-          entry.type === 'custom_message' && entry.customType === MESSAGE_TYPE
-            ? [(entry.details as MailDetails).mailId]
-            : [],
-        ),
-    )
-    for (const mail of readQueue(record.id)) {
-      if (written.has(mail.id)) {
-        removeMail(mail)
-      }
-    }
+    confirm(ctx)
     current = { record, server: await listenForMail(record.id, () => deliver(record.id, true)) }
     // A session that is only starting has no turn to steer, so queued mail joins its first one.
     deliver(record.id, false)
@@ -90,18 +100,6 @@ export default function sessionHub(pi: ExtensionAPI): void {
     if (current !== undefined) {
       current.record = { ...current.record, name: event.name }
       registerSession(current.record)
-    }
-  })
-
-  pi.on('message_end', event => {
-    const { message } = event
-    if (message.role !== 'custom' || message.customType !== MESSAGE_TYPE) {
-      return
-    }
-    const mail = pending.get((message.details as MailDetails).mailId)
-    if (mail !== undefined) {
-      pending.delete(mail.id)
-      removeMail(mail)
     }
   })
 
@@ -115,7 +113,7 @@ export default function sessionHub(pi: ExtensionAPI): void {
       return
     }
     for (const mail of late) {
-      removeMail(mail)
+      pending.add(mail.id)
     }
 
     return {
@@ -124,13 +122,19 @@ export default function sessionHub(pi: ExtensionAPI): void {
     }
   })
 
-  pi.on('agent_settled', (_event, ctx) => {
+  pi.on('agent_settled', (event, ctx) => {
+    confirm(ctx)
     if (ctx.mode === 'print') {
       stopDelivery()
+    } else if (event.aborted && ctx.mode === 'tui') {
+      // Stopping a run in the TUI empties Pi's steering queue, dropping mail the run had not reached.
+      pending.clear()
+      deliver(ctx.sessionManager.getSessionId(), false)
     }
   })
 
-  pi.on('session_shutdown', () => {
+  pi.on('session_shutdown', (_event, ctx) => {
+    confirm(ctx)
     stopDelivery()
     if (current !== undefined) {
       unregisterSession(current.record.id)

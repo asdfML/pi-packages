@@ -61,12 +61,12 @@
     "prepack": "pnpm run build"
   },
   "dependencies": {
-    "zod": "4.6.6"
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "catalog:",
     "@earendil-works/pi-coding-agent": "catalog:",
-    "@gotgenes/pi-permission-system": "40.1.4",
+    "@gotgenes/pi-permission-system": "40.2.0",
     "@types/node": "catalog:",
     "tsdown": "catalog:",
     "typescript": "catalog:",

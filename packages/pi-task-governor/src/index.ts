@@ -108,7 +108,7 @@ export default function taskGovernor(pi: ExtensionAPI): void {
     (message, wake) =>
       pi.sendMessage(
         { customType: 'pi-task-governor:event', content: message, display: true },
-        wake ? { triggerTurn: true, deliverAs: 'followUp' } : { deliverAs: 'nextTurn' },
+        wake ? { triggerTurn: true, deliverAs: 'followUp' } : { triggerTurn: false },
       ),
   )
   const host = {
@@ -268,7 +268,7 @@ export default function taskGovernor(pi: ExtensionAPI): void {
               withSession: async next =>
                 next.sendMessage(
                   { customType: 'pi-task-governor:handoff', content: handoffMessage(board), display: true },
-                  { deliverAs: 'nextTurn' },
+                  { triggerTurn: false },
                 ),
             })
 
