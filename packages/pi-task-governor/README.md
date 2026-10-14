@@ -22,7 +22,7 @@ Run `/governor coordinate` in the main workspace of a jj repository. That sessio
 - A task that runs into a separate problem opens a subtask and finishes it first; a task is reviewed only after its subtasks.
 - A signed-off task merges into the bookmark it was declared against, which only ever moves forward. A merge that conflicts goes back to the executor to resolve and review again. The workspace of a finished task is removed.
 
-Governed sessions cannot run `git`, `jj` or `pi`, the coordinator works without Pi's edit and write tools and without pi-subagents' agents, and the session that declared or worked a task cannot sign it off. These rules stop a model's habits and slips, not one set on getting around them.
+Governed sessions other than the coordinator cannot run `git`, `jj` or `pi`, the coordinator works without Pi's edit and write tools and without pi-subagents' agents, and the session that declared or worked a task cannot sign it off. These rules stop a model's habits and slips, not one set on getting around them.
 
 `/governor` shows the task tree. `/governor pause` and `/governor resume` stop and restart launching executors, `/governor unlock [minutes]` lifts the `git`, `jj` and `pi` block in the current session for 30 minutes or the given number (`0` restores it), and `/governor handoff` continues coordinating in a fresh session. These commands work only in Pi's interactive TUI.
 

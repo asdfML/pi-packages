@@ -239,6 +239,9 @@ export default function taskGovernor(pi: ExtensionAPI): void {
             if (runtime === undefined) {
               throw new Error('This repository is not governed.')
             }
+            if (runtime.role === 'coordinator') {
+              throw new Error('The coordinator runs git, jj and pi unblocked.')
+            }
             const { store, sessionId } = runtime
             const minutes = argument === undefined ? DEFAULT_UNLOCK_MINUTES : Number(argument)
             if (!Number.isFinite(minutes) || minutes < 0) {

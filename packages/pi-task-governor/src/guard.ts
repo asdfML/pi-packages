@@ -15,12 +15,8 @@ import { applyChanges } from './env.js'
 import { readState } from './store.js'
 import { isOpen } from './task.js'
 
+// The shims catch every invocation through PATH, including from scripts, xargs and `sh -c`.
 const SHIMMED_COMMANDS = ['git', 'jj', 'pi']
-// The shims catch every invocation through PATH, including from scripts, xargs and `sh -c`. These catch the ways
-// around PATH: a path to the binary, a binary fetched through nix, and the repository metadata itself.
-const BINARY_PATH = /(?:^|[\s;&|(`'"=])[^\s;&|(`'"=]*\/(?:git|jj|pi)(?=$|[\s;&|)`'"])/
-const NIX_BINARY = /\bnix\s+(?:run|shell)\s[^;&|\n]*?\b(?:git|jujutsu|jj|pi)\b/
-const METADATA = /(?:^|[\s/'"=:])\.(?:jj|git)(?=$|[\s/'"])/
 const BLOCKED_COMMAND =
   'git, jj and pi are blocked in this governed session: version control goes through the task tools, and only a human can lift this with /governor unlock.'
 
@@ -38,12 +34,9 @@ export function writeShims(store: string): void {
   }
 }
 
-function isUnlocked(state: State, sessionId: string): boolean {
-  return (state.unlocks[sessionId] ?? 0) > Date.now()
-}
-
-export function blockedCommand(command: string): boolean {
-  return BINARY_PATH.test(command) || NIX_BINARY.test(command) || METADATA.test(command)
+// The coordinator is the user's own session in the main workspace, so git, jj and pi stay open to it.
+function isLocked(runtime: Runtime): boolean {
+  return runtime.role !== 'coordinator' && (readState(runtime.store).unlocks[runtime.sessionId] ?? 0) <= Date.now()
 }
 
 function resolveToolPath(path: string, cwd: string): string {
@@ -84,9 +77,9 @@ export function writeRefusal(
 }
 
 /**
- * Replaces `bash` in a governed session with one whose commands run with the git, jj and pi shims first on PATH and
- * inside the task's environment. The hook rewrites only the spawned process, never the command text that
- * pi-permission-system matches its rules against.
+ * Replaces `bash` in a governed session with one whose commands run inside the task's environment, with the git, jj and
+ * pi shims first on PATH while the session is locked. The hook rewrites only the spawned process, never the command
+ * text that pi-permission-system matches its rules against.
  */
 export function governBash(pi: ExtensionAPI, ctx: ExtensionContext, currentRuntime: () => Runtime | undefined): void {
   const settings = SettingsManager.create(ctx.cwd, getAgentDir(), { projectTrusted: ctx.isProjectTrusted() })
@@ -102,7 +95,7 @@ export function governBash(pi: ExtensionAPI, ctx: ExtensionContext, currentRunti
           return spawned
         }
         const env = applyChanges(spawned.env, runtime.environment)
-        if (!isUnlocked(readState(runtime.store), runtime.sessionId)) {
+        if (isLocked(runtime)) {
           env['PATH'] = `${shimDirectory(runtime.store)}:${env['PATH'] ?? ''}`
         }
 
@@ -115,25 +108,16 @@ export function governBash(pi: ExtensionAPI, ctx: ExtensionContext, currentRunti
 export function registerGuard(pi: ExtensionAPI, currentRuntime: () => Runtime | undefined): void {
   pi.on('tool_call', (event, ctx): ToolCallEventResult | undefined => {
     const runtime = currentRuntime()
-    if (runtime === undefined) {
+    if (runtime === undefined || !(isToolCallEventType('edit', event) || isToolCallEventType('write', event))) {
       return undefined
     }
-    if (isToolCallEventType('bash', event)) {
-      return !isUnlocked(readState(runtime.store), runtime.sessionId) && blockedCommand(event.input.command)
-        ? { block: true, reason: BLOCKED_COMMAND }
-        : undefined
-    }
-    if (isToolCallEventType('edit', event) || isToolCallEventType('write', event)) {
-      const refusal = writeRefusal(
-        readState(runtime.store),
-        runtime,
-        resolveToolPath(event.input.path, ctx.cwd),
-        childBinding(runtime.sessionId)?.workspace.path,
-      )
+    const refusal = writeRefusal(
+      readState(runtime.store),
+      runtime,
+      resolveToolPath(event.input.path, ctx.cwd),
+      childBinding(runtime.sessionId)?.workspace.path,
+    )
 
-      return refusal === undefined ? undefined : { block: true, reason: refusal }
-    }
-
-    return undefined
+    return refusal === undefined ? undefined : { block: true, reason: refusal }
   })
 }
