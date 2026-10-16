@@ -2,6 +2,10 @@ import type { SpecInput } from '../src/task.js'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, vi } from 'vitest'
+import { saveEnvironment } from '../src/env.js'
+import { storeDirectory, updateState } from '../src/store.js'
+import { beginReview, claimRoot, declareRoot, recordVerdict } from '../src/task.js'
+import { addWorkspace, bookmarkCommit, commitWorkingCopy, headOf } from '../src/vcs.js'
 import { initRepository } from './jj.js'
 
 export interface Workspace {
@@ -61,4 +65,38 @@ export function useWorkspace(): Workspace {
 export function writeJson(path: string, value: unknown): void {
   mkdirSync(dirname(path), { recursive: true })
   writeFileSync(path, JSON.stringify(value))
+}
+
+/**
+ * Declares a root task in an initialised store, writes `contents` to `file` in a workspace of its own, and has its
+ * reviewer sign that commit off, so it waits for the coordinator's sign-off; its executor is gone.
+ */
+export async function signedOff(workspace: Workspace, file: string, contents: string): Promise<string> {
+  const store = storeDirectory(workspace.repo)
+  const id = updateState(store, state => declareRoot(state, PARSER_SPEC, 'main', [], 'boss', 1).id)
+  const task = { name: `task-${id}`, path: join(`${workspace.repo}.tasks`, id) }
+  const base = await bookmarkCommit(workspace.repo, 'main')
+  await addWorkspace(workspace.repo, task, base)
+  writeFileSync(join(task.path, file), contents)
+  await commitWorkingCopy(task, `${id}: edit ${file}`)
+  const head = await headOf(workspace.repo, task)
+  saveEnvironment(store, id, { changes: {} })
+  updateState(store, state => {
+    claimRoot(state, id, { sessionId: `executor-${id}`, pid: DEAD_PID, workspace: task, restarts: 0 }, 2)
+    state.tasks[id]!.base.commit = base
+    beginReview(state, id, `executor-${id}`, head, 3)
+    recordVerdict(state, id, {
+      reviewer: `reviewer-${id}`,
+      commit: head,
+      verdict: 'pass',
+      evidence: {
+        A1: { kind: 'check', command: 'pnpm test', exitCode: 0, output: '', commit: head },
+        A2: { kind: 'observation', text: 'No export changed' },
+      },
+      findings: '',
+      at: 4,
+    })
+  })
+
+  return id
 }

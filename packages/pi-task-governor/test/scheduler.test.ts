@@ -8,8 +8,9 @@ import { DEFAULT_CONFIG } from '../src/config.js'
 import { environmentPath } from '../src/env.js'
 import { createScheduler } from '../src/scheduler.js'
 import { initStore, readState, storeDirectory, updateState } from '../src/store.js'
-import { beginReview, cancelTask, claimRoot, completeMerge, declareRoot, logEvent } from '../src/task.js'
-import { DEAD_PID, PARSER_SPEC, useWorkspace } from './helpers.js'
+import { approve, beginReview, cancelTask, claimRoot, completeMerge, declareRoot, logEvent } from '../src/task.js'
+import { bookmarkCommit, commitWorkingCopy } from '../src/vcs.js'
+import { DEAD_PID, PARSER_SPEC, signedOff, useWorkspace } from './helpers.js'
 import { jj } from './jj.js'
 
 const exits: (() => void)[] = []
@@ -45,16 +46,18 @@ describe('scheduler', () => {
         declareRoot(state, PARSER_SPEC, 'main', [], 'boss', 1)
       }
     })
-    const notify = vi.fn()
+    const notify = vi.fn<(message: string, wake: boolean) => void>()
+    // Called at the end of every pass that gets past the pause.
+    const changed = vi.fn()
     const scheduler = createScheduler(
       {
         runtime: () => ({ store, repoRoot: workspace.repo, sessionId: 'boss', role: 'coordinator', environment: {} }),
-        changed: () => {},
+        changed,
       },
       notify,
     )
 
-    return { store, scheduler, notify }
+    return { store, scheduler, notify, changed }
   }
 
   function launches() {
@@ -174,6 +177,99 @@ describe('scheduler', () => {
     expect(readState(store).tasks['T1']?.log.map(entry => entry.event)).toContain(
       'reopened: its executor stopped during the review',
     )
+  })
+
+  it('asks the coordinator once to sign off a task that passed its review, and relaunches nothing for it', async () => {
+    const { scheduler, notify, changed } = setUp({}, 0)
+    const id = await signedOff(workspace, 'a.txt', 'a\n')
+
+    scheduler.tick()
+    await vi.waitFor(() => expect(changed).toHaveBeenCalledOnce())
+    scheduler.tick()
+    await vi.waitFor(() => expect(changed).toHaveBeenCalledTimes(2))
+
+    const requests = notify.mock.calls.filter(([message]) => message.includes('passed its review'))
+    expect(requests).toHaveLength(1)
+    const [request, wake] = requests[0]!
+    expect(wake).toBe(true)
+    expect(request).toContain(`${id} passed its review and waits for your sign-off before it merges into main`)
+    expect(request).toContain('- A1 Tests pass: `pnpm test` passed\n- A2 No API change: No export changed')
+    expect(request).toContain('+a')
+    expect(spawnSession).not.toHaveBeenCalled()
+  })
+
+  it('merges a task the coordinator approved, then removes its workspace', async () => {
+    const { store, scheduler, notify } = setUp({}, 0)
+    const id = await signedOff(workspace, 'a.txt', 'a\n')
+    const { signedCommit, claim } = readState(store).tasks[id]!
+    updateState(store, state => approve(state, id, 'boss', 5))
+
+    scheduler.tick()
+
+    await vi.waitFor(() => expect(readState(store).tasks[id]?.state).toBe('done'))
+    expect(await bookmarkCommit(workspace.repo, 'main')).toBe(signedCommit)
+    expect(notify).toHaveBeenCalledWith(`${id} is merged into main, and every task is finished.`, true)
+    await vi.waitFor(() => expect(existsSync(claim!.workspace.path)).toBe(false))
+    expect(spawnSession).not.toHaveBeenCalled()
+  })
+
+  it('sends an approved task whose merge conflicts to a fresh executor session, measured from what landed', async () => {
+    const { store, scheduler, notify } = setUp({}, 0)
+    const first = await signedOff(workspace, 'shared.txt', 'line1\nline2 by T1\nline3\n')
+    const second = await signedOff(workspace, 'shared.txt', 'line1\nline2 by T2\nline3\n')
+    updateState(store, state => {
+      approve(state, first, 'boss', 5)
+      approve(state, second, 'boss', 5)
+    })
+
+    scheduler.tick()
+
+    await vi.waitFor(() => expect(spawnSession).toHaveBeenCalledOnce())
+    expect(readState(store).tasks[first]?.state).toBe('done')
+    expect(notify).toHaveBeenCalledWith(`${first} is merged into main.`, false)
+    expect(readState(store).tasks[second]).toMatchObject({
+      state: 'claimed',
+      base: { commit: await bookmarkCommit(workspace.repo, 'main') },
+    })
+    expect(notify).toHaveBeenCalledWith(
+      expect.stringContaining(`${second} went back to its executor: merging into main conflicted`),
+      false,
+    )
+    expect(launches()[0]?.prompt).toContain('merging into main conflicted')
+  })
+
+  it('sends back an approved task whose workspace changed after its review', async () => {
+    const { store, scheduler, notify } = setUp({}, 0)
+    const id = await signedOff(workspace, 'a.txt', 'a\n')
+    const { workspace: task } = readState(store).tasks[id]!.claim!
+    writeFileSync(join(task.path, 'b.txt'), 'b\n')
+    await commitWorkingCopy(task, 'stray change')
+    updateState(store, state => approve(state, id, 'boss', 5))
+
+    scheduler.tick()
+
+    await vi.waitFor(() => expect(readState(store).tasks[id]?.state).toBe('claimed'))
+    expect(notify).toHaveBeenCalledWith(
+      `${id} went back to its executor: its workspace changed after its review`,
+      false,
+    )
+  })
+
+  it('reports an approved merge that fails, and drops the approval for the coordinator to give again', async () => {
+    const { store, scheduler, notify } = setUp({}, 0)
+    const id = await signedOff(workspace, 'a.txt', 'a\n')
+    updateState(store, state => {
+      approve(state, id, 'boss', 5)
+      state.tasks[id]!.base.bookmark = 'gone'
+    })
+
+    scheduler.tick()
+
+    await vi.waitFor(() =>
+      expect(notify).toHaveBeenCalledWith(expect.stringContaining(`Merging ${id} into gone failed`), true),
+    )
+    const task = readState(store).tasks[id]
+    expect([task?.state, task?.approvedBy]).toEqual(['approving', undefined])
   })
 
   it('reports a cleanup that fails and goes on scheduling', async () => {

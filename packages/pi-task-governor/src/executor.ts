@@ -22,7 +22,7 @@ const NOTE = Type.String({
 })
 
 /** Mail reaches the coordinator even while it is not running; it reads it when it resumes. */
-export async function tellCoordinator(runtime: Runtime, rootId: string, body: string, wake: boolean): Promise<void> {
+async function tellCoordinator(runtime: Runtime, rootId: string, body: string, wake: boolean): Promise<void> {
   const { lease } = readState(runtime.store)
   if (lease !== undefined) {
     await sendMail({ from: runtime.sessionId, fromName: `${rootId} executor`, to: lease.sessionId, body, wake })

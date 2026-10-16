@@ -31,7 +31,7 @@ export function registerDeclareTools(pi: ExtensionAPI, host: Host): void {
       name: 'task_declare',
       label: 'Declare task',
       description:
-        'Declare a root task. It queues until an executor slot is free, and until the tasks in `after` are merged; an independent executor session then claims it, works it in its own jj workspace and merges it into the bookmark once a reviewer signs it off. Scope, boundary and non-goals fence the work in; every acceptance criterion needs evidence before sign-off, so prefer criteria with a check command.',
+        'Declare a root task. It queues until an executor slot is free, and until the tasks in `after` are merged; an independent executor session then claims it and works it in its own jj workspace. Once a reviewer signs it off with evidence, you sign it off too, and it merges into the bookmark. Scope, boundary and non-goals fence the work in; every acceptance criterion needs evidence before sign-off, so prefer criteria with a check command.',
       parameters: Type.Object({
         ...SPEC_PARAMETERS,
         bookmark: Type.Optional(

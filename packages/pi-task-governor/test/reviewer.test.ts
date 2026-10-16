@@ -105,7 +105,7 @@ describe('reviewer session', () => {
 
     expect(binding.verdict).toBe('pass')
     expect(readState(store).tasks['T1']).toMatchObject({
-      state: 'reviewing',
+      state: 'approving',
       signedBy: 'reviewer-1',
       signedCommit: binding.commit,
       reviews: [{ evidence: { A1: { kind: 'check' }, A2: { kind: 'observation' } } }],

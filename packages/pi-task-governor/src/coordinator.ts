@@ -9,10 +9,18 @@ import { loadConfig } from './config.js'
 import { leaseIsFree, requireRole } from './runtime.js'
 import { executorStatus } from './scheduler.js'
 import { findRepoRoot, initStore, readState, storeDirectory, updateState } from './store.js'
-import { cancelTask, logEvent, renderBrief, renderTree, requireTask, waitsFor } from './task.js'
+import { approve, cancelTask, logEvent, renderBrief, renderTree, requireTask, sendBack, waitsFor } from './task.js'
 import { nonBlank, textResult } from './tooling.js'
 
-const COORDINATOR_TOOLS: string[] = ['task_declare', 'task_list', 'task_show', 'task_cancel', 'task_answer']
+const COORDINATOR_TOOLS: string[] = [
+  'task_declare',
+  'task_list',
+  'task_show',
+  'task_cancel',
+  'task_answer',
+  'task_approve',
+  'task_reject',
+]
 // The coordinator writes task specs; code reaches the repository only through tasks, not through pi-subagents' agents either.
 const WITHHELD_FROM_COORDINATOR = new Set(['edit', 'write', 'session_spawn', 'subagent', 'steer_subagent'])
 
@@ -21,6 +29,9 @@ function describeRun(state: State, task: Task): string {
     const waiting = waitsFor(state, task)
 
     return waiting.length === 0 ? '' : `waits for ${waiting.join(', ')}`
+  }
+  if (task.state === 'approving') {
+    return task.approvedBy === undefined ? 'waits for your sign-off' : 'merging'
   }
   const claim = task.claim
   if (claim === undefined) {
@@ -137,6 +148,45 @@ export function registerCoordinatorTools(pi: ExtensionAPI, host: Host): void {
         host.changed()
 
         return textResult(`A fresh executor session continues ${params.id} with your answer.`)
+      },
+    }),
+  )
+
+  pi.registerTool(
+    defineTool({
+      name: 'task_approve',
+      label: 'Approve task',
+      description:
+        'Sign off a root task that passed its review, which merges it into its bookmark. You hear when it lands, or when it goes back to its executor because the merge conflicts or breaks a check.',
+      parameters: Type.Object({ id: nonBlank('Root task id') }),
+      defaultActive: false,
+      async execute(_toolCallId, params) {
+        const runtime = requireRole(host.runtime(), 'coordinator')
+        updateState(runtime.store, state => approve(state, params.id, runtime.sessionId, Date.now()))
+        host.changed()
+
+        return textResult(`${params.id} is approved and merges now.`)
+      },
+    }),
+  )
+
+  pi.registerTool(
+    defineTool({
+      name: 'task_reject',
+      label: 'Send task back',
+      description:
+        'Refuse to sign off a root task that passed its review, and send it back with your findings to a fresh executor session.',
+      parameters: Type.Object({
+        id: nonBlank('Root task id'),
+        findings: nonBlank('What is wrong, where, and what would make you sign it off'),
+      }),
+      defaultActive: false,
+      async execute(_toolCallId, params) {
+        const runtime = requireRole(host.runtime(), 'coordinator')
+        updateState(runtime.store, state => sendBack(state, params.id, runtime.sessionId, params.findings, Date.now()))
+        host.changed()
+
+        return textResult(`${params.id} goes back to its executor with your findings.`)
       },
     }),
   )

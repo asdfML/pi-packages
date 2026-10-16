@@ -7,7 +7,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_CONFIG } from '../src/config.js'
 import { createScheduler } from '../src/scheduler.js'
 import { initStore, readState, storeDirectory, updateState } from '../src/store.js'
-import { declareRoot } from '../src/task.js'
+import { approve, declareRoot } from '../src/task.js'
 import { ADD_FILE_SPEC, useWorkspace, writeJson } from './helpers.js'
 import { jj } from './jj.js'
 
@@ -17,7 +17,7 @@ const FAUX_MODEL = fileURLToPath(new URL('fixtures/faux-model.ts', import.meta.u
 
 /**
  * Real `pi --print` executors, with in-process developer and reviewer sessions, driven by a scripted model: this
- * process stands in for the coordinator and runs the scheduler.
+ * process stands in for the coordinator, runs the scheduler and signs the task off.
  */
 describe('governed task end to end', () => {
   const workspace = useWorkspace()
@@ -29,7 +29,7 @@ describe('governed task end to end', () => {
     }
   })
 
-  it('takes a declared task through development, a handoff, review and merge, then cleans its workspace up', async () => {
+  it('takes a declared task through development, a handoff, review, sign-off and merge, then cleans up', async () => {
     writeJson(join(workspace.agent, 'settings.json'), {
       extensions: [join(HUB, 'dist', 'index.js'), join(GOVERNOR, 'dist', 'index.js'), FAUX_MODEL],
     })
@@ -46,20 +46,25 @@ describe('governed task end to end', () => {
     // Under vitest the running script is vitest's; with it hidden, the hub starts the `pi` on PATH.
     const script = process.argv[1]
     process.argv[1] = ''
+    const notify = vi.fn()
     const scheduler = createScheduler(
       {
         runtime: () => ({ store, repoRoot: workspace.repo, sessionId: 'boss', role: 'coordinator', environment: {} }),
         changed: () => {},
       },
-      () => {},
+      notify,
     )
+    const waiting = { timeout: 120_000, interval: 500 }
 
     try {
       scheduler.tick()
-      await vi.waitFor(() => expect(readState(store).tasks['T1']?.state).toBe('done'), {
-        timeout: 120_000,
-        interval: 500,
-      })
+      await vi.waitFor(
+        () => expect(notify).toHaveBeenCalledWith(expect.stringContaining('T1 passed its review'), true),
+        waiting,
+      )
+      updateState(store, state => approve(state, 'T1', 'boss', Date.now()))
+      scheduler.tick()
+      await vi.waitFor(() => expect(readState(store).tasks['T1']?.state).toBe('done'), waiting)
     } finally {
       process.argv[1] = script!
     }
@@ -76,7 +81,11 @@ describe('governed task end to end', () => {
     expect(task.signedBy).not.toBe(task.claim?.sessionId)
     expect(task.note).toBe('a.txt is written; it needs its review.')
     expect(task.log.map(entry => entry.event.replace(/session \S+/, 'session X'))).toEqual(
-      expect.arrayContaining(['executor session X started', 'executor session X handed off by choice']),
+      expect.arrayContaining([
+        'executor session X started',
+        'executor session X handed off by choice',
+        'approved by boss',
+      ]),
     )
     expect(task.log.filter(entry => entry.event.endsWith(' started'))).toHaveLength(2)
     await vi.waitFor(() => expect(existsSync(task.claim!.workspace.path)).toBe(false), { timeout: 60_000 })

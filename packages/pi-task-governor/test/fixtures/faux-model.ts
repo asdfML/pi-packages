@@ -24,7 +24,9 @@ function respond(context: TranscriptContext): AssistantMessage {
   const ran = new Set(context.messages.flatMap(message => (message.role === 'toolResult' ? [message.toolName] : [])))
   if (system.includes('You are the executor')) {
     if (prompted(context).startsWith('Continue this task')) {
-      return ran.has('task_review') ? fauxAssistantMessage('The task is merged.') : callTool('task_review', {})
+      return ran.has('task_review')
+        ? fauxAssistantMessage('The task waits for its sign-off.')
+        : callTool('task_review', {})
     }
     if (!ran.has('task_develop')) {
       return callTool('task_develop', { instructions: 'Create a.txt containing hello' })

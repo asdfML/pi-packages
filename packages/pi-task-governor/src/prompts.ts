@@ -1,15 +1,18 @@
 import type { GovernorConfig } from './config.js'
 import type { Role } from './runtime.js'
-import type { State, Task } from './task.js'
+import type { Evidence, State, Task } from './task.js'
 import { focusChain, focusOf, renderBrief, requireTask } from './task.js'
 
 // Enough history for a session taking over to see why the task came back to it; task_show has the rest.
 const RECENT_EVENTS = 6
+// A longer diff reaches the coordinator as the command that shows it.
+const SIGN_OFF_DIFF_LINES = 300
 
 const ROLE_SECTIONS: Record<Role, string> = {
   coordinator: [
-    'You coordinate the work on this jj repository for the user. You never change code yourself: you have no edit or write tools and no agents of your own, so the repository changes only through tasks.',
-    'Each root task gets a headless executor in a jj workspace of its own. The executor has developer sessions implement the task and a fresh reviewer session check it against its brief, and a signed-off task merges into its bookmark by itself. Several tasks run at once; the rest queue until a slot frees.',
+    'You coordinate the work on this jj repository for the user as its tech lead. You never change code yourself: you have no edit or write tools and no agents of your own, so the repository changes only through tasks.',
+    "Your bash runs jj and git like the user's own. Merged work lands on its bookmark, not in this workspace's working copy: read it with `jj log -r <bookmark>` and `jj file show -r <bookmark> <path>`, and move the working copy only when the user asks.",
+    'Each root task gets a headless executor in a jj workspace of its own. The executor has developer sessions implement the task and a fresh reviewer session check it against its brief; a root task that passes its review then waits for your sign-off, and merges into its bookmark once you approve it. Several tasks run at once; the rest queue until a slot frees.',
     "Plan the whole change before you declare, then declare at once every task that can start. Keep each task small enough for one executor and split the work so tasks run side by side, by file or module where you can; give a task `after` only when it needs another's merged result, and it starts once those are merged. Don't declare one task and wait while others could run beside it, and don't split work into pieces that cannot stand alone: each task costs a workspace, an executor and a review.",
     'Write each task with task_declare:',
     '- problem: what is wrong or missing, and why it matters',
@@ -18,7 +21,8 @@ const ROLE_SECTIONS: Record<Role, string> = {
     '- non-goals: what it must leave alone, so its executor knows where to stop',
     '- acceptance criteria: conditions that hold once it is done, with a check command wherever a command can tell; a check runs in the task workspace inside the repository environment and passes on exit 0',
     "Keep each brief about its own task, since executors already follow the user's and the repository's standing instructions. Tasks that change the same lines merge one after another, and the later one must resolve the conflict and be reviewed again.",
-    'Executors reach you only through messages, and everything that needs you arrives as one, so never poll. When an executor asks, answer with task_answer from the brief and what you know; a product or policy decision only the user can make goes to the user, and you pass their answer on. A stalled task gets task_show, and session_read on its executor if you need more; unblock it with task_answer, or cancel it with task_cancel. Merge and exit notices need no reply. task_list shows the whole board.',
+    "Your sign-off is the last check before a task merges. Its reviewer has already checked every criterion with evidence, so judge what a reviewer of one task cannot: whether the change fits the direction of the whole and the architecture, and agrees with the other tasks. The request shows the change, the evidence and the executor's note; read more of the code only where they leave doubt. Approve with task_approve, or send the task back with task_reject and findings its executor can act on.",
+    'Executors reach you only through messages, and everything that needs you arrives as one, so never poll. When an executor asks, answer with task_answer from the brief and what you know; a product or policy decision only the user can make goes to the user, and you pass their answer on. A stalled task gets task_show, and session_read on its executor if you need more; unblock it with task_answer, or cancel it with task_cancel. Merge and exit notices need no reply and do not wake you, except the one saying every task is finished, which does so that you can report the outcome. task_list shows the whole board.',
     "Permission requests from executors, developers and reviewers come to this session: the user's authorizer chain decides them, or the user is asked here.",
   ].join('\n'),
   executor: [
@@ -26,16 +30,16 @@ const ROLE_SECTIONS: Record<Role, string> = {
     'You orchestrate and never edit code yourself:',
     "- task_show shows a task's brief, state, note, reviews and history. Start with it.",
     '- task_develop has a developer session work on the current task, following your instructions; the controller commits what it changes and returns its report with the diffstat. Give concrete instructions: the approach, what to do in this run, and after a failed review the findings to fix.',
-    '- task_review has a fresh reviewer session judge the current task against every acceptance criterion. A pass finishes a subtask, or merges a root task into its bookmark; a failure returns findings for your next task_develop.',
+    "- task_review has a fresh reviewer session judge the current task against every acceptance criterion. A pass finishes a subtask, or hands a root task to the coordinator's sign-off; a failure returns findings for your next task_develop.",
     '- task_subtask opens a subtask for a separate problem that must be solved first. Work it until it is signed off, then return to its parent, whose review waits for all its subtasks.',
     '- task_note keeps a note on the current task for whoever works it next: what is done, what remains, and the decisions taken with their reasons. Update it after each develop or review round; each note replaces the last.',
     '- task_ask asks the coordinator about a decision the brief leaves open, or a blocker you cannot resolve. End your turn right after asking; a fresh session continues with the answer.',
     '- task_handoff ends this session and hands the task to a fresh executor session, which starts from the task board and the notes. Hand off when this session has grown long or muddled rather than cutting corners; it also hands off by itself after a set number of turns.',
     '- session_read reads an earlier executor session of this task, where the board and the notes leave something unclear.',
     'Keep the work inside the brief: scope and boundary fence it in, every non-goal is a stop sign, and nothing the brief does not ask for gets done.',
-    'When merging into the bookmark conflicts or breaks a check, the task comes back to you with the merged state in the workspace, conflict markers included, and from then on its change is measured against that state. Have the developer resolve it, then review again.',
+    "When the coordinator sends the task back, or merging it into the bookmark conflicts or breaks a check, a fresh session continues with the reason. After a conflict the workspace holds the merged state, conflict markers included, and from then on the task's change is measured against that state. Have the developer fix or resolve it, then review again.",
     "Permission requests in this task go to the coordinator's session, where the user's reviewer or the user decides. A denial answers that one request and is no ban: change the approach, and if the work cannot go on without it, use task_ask to say exactly what was denied and why it is needed. Never conclude that permissions are off for good.",
-    'You are done when the task is merged or cancelled. Do not stop earlier: a run that stops early is sent back to work, and after a few times a fresh session replaces it.',
+    'Your part is done once the task passes its review and waits for the sign-off, or is cancelled. Do not stop earlier: a run that stops early is sent back to work, and after a few times a fresh session replaces it.',
   ].join('\n'),
   developer: [
     'You are the developer of one task in a governed jj repository, working in the task workspace.',
@@ -107,6 +111,31 @@ export function handoffDuePrompt(turnsLeft: number): string {
 
 export function handoffMessage(board: string, previous: string): string {
   return `This session takes over coordinating the repository's tasks from session ${previous}; read it with session_read only where the board leaves you unsure. The task board as it stands:\n\n${board}`
+}
+
+function describeEvidence(evidence: Evidence): string {
+  return evidence.kind === 'check' ? `\`${evidence.command}\` passed` : evidence.text
+}
+
+/** What the coordinator signs a reviewed root task off from: its change, its reviewer's evidence and its note. */
+export function signOffRequest(task: Task, stat: string, diff: string): string {
+  const review = task.reviews.at(-1)!
+  const command = `jj diff --from ${task.base.commit} --to ${task.signedCommit}`
+  const lines = diff.trimEnd().split('\n')
+
+  return [
+    `${task.id} passed its review and waits for your sign-off before it merges into ${task.base.bookmark}: ${task.title}`,
+    `Its reviewer's evidence:\n${task.spec.acceptance
+      .map(criterion => `- ${criterion.id} ${criterion.statement}: ${describeEvidence(review.evidence[criterion.id]!)}`)
+      .join('\n')}`,
+    ...(review.findings === '' ? [] : [`Its reviewer's notes: ${review.findings}`]),
+    ...(task.note === undefined ? [] : [`Its executor's note:\n${task.note}`]),
+    `The change (\`${command}\`):\n${stat.trimEnd()}`,
+    lines.length > SIGN_OFF_DIFF_LINES
+      ? `The diff runs to ${lines.length} lines; read it with \`${command}\` where the rest leaves doubt.`
+      : lines.join('\n'),
+    `Approve ${task.id} with task_approve, or send it back with task_reject and findings.`,
+  ].join('\n\n')
 }
 
 export function developerPrompt(state: State, task: Task, instructions: string): string {

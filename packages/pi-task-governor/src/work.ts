@@ -6,20 +6,17 @@ import type { Workspace } from './vcs.js'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { defineTool } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
-import { failedChecks } from './checks.js'
 import { runChild } from './children.js'
-import { tellCoordinator } from './executor.js'
 import { developerPrompt, returnToParentPrompt, reviewerPrompt } from './prompts.js'
 import { requireRole } from './runtime.js'
 import { readState, updateState } from './store.js'
-import { beginReview, claimedRoot, completeMerge, focusOf, logEvent, reopen, requireTask } from './task.js'
+import { beginReview, claimedRoot, focusOf, logEvent, reopen, requireTask } from './task.js'
 import { nonBlank, textResult } from './tooling.js'
-import { commitWorkingCopy, diff, headOf, mergeInto } from './vcs.js'
+import { commitWorkingCopy, diff, headOf } from './vcs.js'
 
 interface Work {
   runtime: Runtime
   state: State
-  root: Task
   /** The deepest open task, where depth-first work happens. */
   focus: Task
   workspace: Workspace
@@ -34,35 +31,7 @@ function currentWork(host: Host): Work {
     throw new Error(`${focus.id} is ${focus.state}, not open for work.`)
   }
 
-  return { runtime, state, root, focus, workspace: root.claim!.workspace }
-}
-
-/** Merges a signed-off root task into its bookmark and says what the executor should do next. */
-async function merge(runtime: Runtime, root: Task, workspace: Workspace): Promise<string> {
-  const bookmark = root.base.bookmark!
-  const result = await mergeInto(runtime.repoRoot, workspace, bookmark, `${root.id}: merge ${bookmark}`, async () =>
-    failedChecks(runtime, workspace, root.spec.acceptance, await headOf(runtime.repoRoot, workspace)),
-  )
-  const now = Date.now()
-  switch (result.kind) {
-    case 'merged':
-      updateState(runtime.store, state => completeMerge(state, root.id, result.commit, now))
-      await tellCoordinator(runtime, root.id, `${root.id} is merged into ${bookmark}.`, false)
-
-      return `${root.id} is merged into ${bookmark} and done. End your run.`
-    case 'conflicted':
-      updateState(runtime.store, state =>
-        reopen(state, root.id, `merging into ${bookmark} conflicted`, now, result.onto),
-      )
-
-      return `Merging ${root.id} into ${bookmark} conflicted: other work landed there first. The workspace now holds a merge commit with conflict markers; have the developer resolve them, then review again.`
-    case 'failed-checks':
-      updateState(runtime.store, state =>
-        reopen(state, root.id, `checks failed after rebasing onto ${bookmark}`, now, result.onto),
-      )
-
-      return `${root.id} rebased cleanly onto ${bookmark}, but its checks then failed:\n${result.detail}\nHave the developer fix this, then review again.`
-  }
+  return { runtime, state, focus, workspace: root.claim!.workspace }
 }
 
 export function registerWorkTools(pi: ExtensionAPI, host: Host): void {
@@ -129,12 +98,12 @@ export function registerWorkTools(pi: ExtensionAPI, host: Host): void {
       name: 'task_review',
       label: 'Review',
       description:
-        'Have a fresh reviewer session judge your current task against every acceptance criterion. A pass finishes a subtask, or merges a root task into its bookmark; a failure returns findings to fix.',
+        "Have a fresh reviewer session judge your current task against every acceptance criterion. A pass finishes a subtask, or hands a root task to the coordinator's sign-off before it merges; a failure returns findings to fix.",
       parameters: Type.Object({}),
       defaultActive: false,
       executionMode: 'sequential',
       async execute(_toolCallId, _params, signal, _onUpdate, ctx) {
-        const { runtime, state, root, focus, workspace } = currentWork(host)
+        const { runtime, state, focus, workspace } = currentWork(host)
         await commitWorkingCopy(workspace, `${focus.id}: ${focus.title}`)
         const head = await headOf(runtime.repoRoot, workspace)
         if (head === focus.base.commit) {
@@ -157,25 +126,27 @@ export function registerWorkTools(pi: ExtensionAPI, host: Host): void {
             { binding, model, thinking, maxTurns, prompt: reviewerPrompt(state, focus, head, lastReport) },
             signal,
           )
-          if (binding.verdict === undefined) {
-            return textResult(`The reviewer of ${focus.id} ended without a verdict; run task_review again.`)
-          }
-          const reviewed = readState(runtime.store)
-          if (binding.verdict === 'fail') {
-            return textResult(
-              `${focus.id} failed its review:\n\n${requireTask(reviewed, focus.id).reviews.at(-1)!.findings}\n\nSend the developer back with these findings, then review again.`,
-            )
-          }
-
-          return textResult(
-            focus.parentId === undefined
-              ? await merge(runtime, root, workspace)
-              : returnToParentPrompt(reviewed, focus),
-          )
         } finally {
-          // Whatever cut the review short, such as a missing verdict or an error, its task must not stay in review.
-          updateState(runtime.store, current => reopen(current, focus.id, 'its review ended unfinished', Date.now()))
+          // Whatever cut the review short, such as an error or an abort, its task must not stay in review.
+          if (binding.verdict === undefined) {
+            updateState(runtime.store, current => reopen(current, focus.id, 'its review ended unfinished', Date.now()))
+          }
         }
+        if (binding.verdict === undefined) {
+          return textResult(`The reviewer of ${focus.id} ended without a verdict; run task_review again.`)
+        }
+        const reviewed = readState(runtime.store)
+        if (binding.verdict === 'fail') {
+          return textResult(
+            `${focus.id} failed its review:\n\n${requireTask(reviewed, focus.id).reviews.at(-1)!.findings}\n\nSend the developer back with these findings, then review again.`,
+          )
+        }
+
+        return textResult(
+          focus.parentId === undefined
+            ? `${focus.id} passed its review and waits for the coordinator's sign-off before it merges. End your run now; if it comes back, a fresh session continues with the reason.`
+            : returnToParentPrompt(reviewed, focus),
+        )
       },
     }),
   )

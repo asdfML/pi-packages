@@ -8,7 +8,7 @@ import { DEFAULT_CONFIG } from '../src/config.js'
 import { saveEnvironment } from '../src/env.js'
 import { initStore, readState, storeDirectory, updateState } from '../src/store.js'
 import { claimRoot, declareRoot, recordVerdict } from '../src/task.js'
-import { addWorkspace, bookmarkCommit, commitWorkingCopy, mergeInto } from '../src/vcs.js'
+import { addWorkspace, bookmarkCommit } from '../src/vcs.js'
 import { DEAD_PID, PARSER_SPEC, useWorkspace } from './helpers.js'
 import { loadGovernor } from './pi.js'
 
@@ -182,11 +182,11 @@ describe('executor session', () => {
     ])
   })
 
-  it('hands nothing more off once it has asked the coordinator, and only stops at its limit', async () => {
+  it('hands nothing more off once its task waits for the coordinator, and only stops at its limit', async () => {
     const store = claimed(process.pid)
     updateState(store, state => {
       state.config.roles.executor.maxTurns = 4
-      state.tasks['T1']!.claim!.question = 'Which API version?'
+      state.tasks['T1']!.state = 'approving'
     })
     const session = executor(store)
     await session.start()
@@ -212,14 +212,9 @@ describe('executor session', () => {
     expect(readState(store).tasks['T1']?.log.at(-1)?.event).toBe('reopened: its review ended unfinished')
   })
 
-  it('reviews only its own changes after a conflicting merge takes in what landed on main', async () => {
-    const store = await underWay('shared.txt', 'line1\nline2 by T1\nline3\n')
-    const other = { name: 'task-T2', path: join(workspace.root, 'repo.tasks', 'T2') }
-    await addWorkspace(workspace.repo, other, await bookmarkCommit(workspace.repo, 'main'))
-    writeFileSync(join(other.path, 'shared.txt'), 'line1\nline2 by T2\nline3\n')
-    await commitWorkingCopy(other, 'T2: edit line 2')
-    await mergeInto(workspace.repo, other, 'main', 'T2: merge main', async () => undefined)
-    const landed = await bookmarkCommit(workspace.repo, 'main')
+  it("leaves a root task that passed its review to the coordinator's sign-off, merging nothing", async () => {
+    const store = await underWay('a.txt', 'hello\n')
+    const main = await bookmarkCommit(workspace.repo, 'main')
     vi.mocked(runChild).mockImplementationOnce(async (_ctx, { binding }) => {
       updateState(binding.store, state =>
         recordVerdict(state, binding.taskId, {
@@ -243,8 +238,10 @@ describe('executor session', () => {
 
     const result = (await session.tool('task_review', {})).content[0] as { text: string }
 
-    expect(result.text).toContain('conflicted')
-    expect(readState(store).tasks['T1']).toMatchObject({ state: 'claimed', base: { bookmark: 'main', commit: landed } })
+    expect(result.text).toContain("waits for the coordinator's sign-off")
+    expect(readState(store).tasks['T1']?.state).toBe('approving')
+    expect(await bookmarkCommit(workspace.repo, 'main')).toBe(main)
+    expect(await boundary(session, 'agent_before_settle', { outcome: 'completed' })).toBeUndefined()
   })
 
   it('sends its permission asks to whichever session holds the lease after a handoff', async () => {

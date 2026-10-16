@@ -2,7 +2,7 @@
 
 [![npm](https://img.shields.io/npm/v/@mzwing/pi-task-governor)](https://www.npmjs.com/package/@mzwing/pi-task-governor)
 
-A [Pi](https://github.com/earendil-works/pi) extension that works a [jj](https://github.com/jj-vcs/jj) repository through declared tasks. You talk to one coordinator session, which writes each task down with its problem, scope, boundary, non-goals and acceptance criteria. A headless executor session then works the task in a jj workspace of its own through developer and reviewer subagents, and the task merges only once a fresh reviewer has signed off every criterion with evidence.
+A [Pi](https://github.com/earendil-works/pi) extension that works a [jj](https://github.com/jj-vcs/jj) repository through declared tasks. You talk to one coordinator session, which writes each task down with its problem, scope, boundary, non-goals and acceptance criteria. A headless executor session then works the task in a jj workspace of its own through developer and reviewer subagents, and the task merges only once a fresh reviewer has signed off every criterion with evidence and the coordinator has approved it.
 
 ## Install
 
@@ -20,9 +20,9 @@ Run `/governor coordinate` in the main workspace of a jj repository. That sessio
 - Up to `maxExecutors` tasks are worked at once, each in its own workspace, inside the environment of the repository's `.envrc` or `flake.nix` and with a `$TMPDIR` of its own. A task declared to wait for others starts once they are merged.
 - Each executor works in fresh sessions. A new one takes over from the task board and the note kept on the task whenever the last one hands off, reaches `roles.executor.maxTurns` turns, or asks the coordinator and gets the answer. An executor that keeps stopping before its task ends is reported as stalled.
 - A task that runs into a separate problem opens a subtask and finishes it first; a task is reviewed only after its subtasks.
-- A signed-off task merges into the bookmark it was declared against, which only ever moves forward. A merge that conflicts goes back to the executor to resolve and review again. The workspace of a finished task is removed, with its `$TMPDIR`.
+- A task its reviewer signed off waits for the coordinator to sign it off too, then merges into the bookmark it was declared against, which only ever moves forward. A task the coordinator sends back, or whose merge conflicts, goes back to its executor to fix and review again. The workspace of a finished task is removed, with its `$TMPDIR`.
 
-Governed sessions other than the coordinator cannot run `git`, `jj` or `pi`, the coordinator works without Pi's edit and write tools and without pi-subagents' agents, and the session that declared or worked a task cannot sign it off. These rules stop a model's habits and slips, not one set on getting around them.
+Governed sessions other than the coordinator cannot run `git`, `jj` or `pi`, the coordinator works without Pi's edit and write tools and without pi-subagents' agents, and the session that declared or worked a task cannot pass its review. These rules stop a model's habits and slips, not one set on getting around them.
 
 `/governor` shows the task tree. `/governor pause` and `/governor resume` stop and restart launching executors, `/governor unlock [minutes]` lifts the `git`, `jj` and `pi` block in the current session for 30 minutes or the given number (`0` restores it), and `/governor handoff` continues coordinating in a fresh session, which the governor suggests once the coordinator has run `roles.coordinator.maxTurns` turns. These commands work only in Pi's interactive TUI.
 

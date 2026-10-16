@@ -2,6 +2,7 @@ import type { Claim, Evidence, Review, State } from '../src/task.js'
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_CONFIG } from '../src/config.js'
 import {
+  approve,
   beginReview,
   cancelTask,
   claimRoot,
@@ -14,6 +15,7 @@ import {
   renderBrief,
   renderTree,
   reopen,
+  sendBack,
   waitsFor,
 } from '../src/task.js'
 import { PARSER_SPEC } from './helpers.js'
@@ -73,6 +75,7 @@ describe('declaring tasks', () => {
     expect(grandchild.id).toBe('T1.1.1')
     expect(focusOf(current, current.tasks['T1']!).id).toBe('T1.1.1')
   })
+
   it('lets a root task wait only for uncancelled root tasks of its bookmark, until they are merged', () => {
     const current = claimed()
     declareChild(current, 'T1', PARSER_SPEC, 'executor', 'c0', 3)
@@ -105,12 +108,12 @@ describe('reviewing tasks', () => {
     expect(() => beginReview(current, 'T1.1', 'intruder', 'c1', 4)).toThrow('not claimed by this session')
   })
 
-  it('refuses a sign-off by the session that declared or claimed the task', () => {
+  it('refuses a review by the session that declared or claimed the task', () => {
     const current = claimed()
     beginReview(current, 'T1', 'executor', 'c1', 3)
 
-    expect(() => recordVerdict(current, 'T1', review({ reviewer: 'coordinator' }))).toThrow('cannot sign it off')
-    expect(() => recordVerdict(current, 'T1', review({ reviewer: 'executor' }))).toThrow('cannot sign it off')
+    expect(() => recordVerdict(current, 'T1', review({ reviewer: 'coordinator' }))).toThrow('cannot review it')
+    expect(() => recordVerdict(current, 'T1', review({ reviewer: 'executor' }))).toThrow('cannot review it')
   })
 
   it('refuses a pass whose evidence misses, fails or predates a criterion', () => {
@@ -144,7 +147,7 @@ describe('reviewing tasks', () => {
     expect(current.tasks['T1']).toMatchObject({ state: 'claimed', reviews: [{ verdict: 'fail' }] })
   })
 
-  it('finishes a signed subtask at once and a signed root task only once merged', () => {
+  it('finishes a signed subtask at once, and leaves a signed root task to the coordinator before it merges', () => {
     const current = claimed()
     declareChild(current, 'T1', PARSER_SPEC, 'executor', 'c0', 3)
     beginReview(current, 'T1.1', 'executor', 'c1', 4)
@@ -153,21 +156,44 @@ describe('reviewing tasks', () => {
     recordVerdict(current, 'T1', review({ commit: 'c2', evidence: passingEvidence('c2') }))
 
     expect(current.tasks['T1.1']?.state).toBe('done')
-    expect(current.tasks['T1']).toMatchObject({ state: 'reviewing', signedBy: 'reviewer', signedCommit: 'c2' })
-    completeMerge(current, 'T1', 'c3', 6)
-    expect(current.tasks['T1']).toMatchObject({ state: 'done', merged: 'c3' })
+    expect(current.tasks['T1']).toMatchObject({ state: 'approving', signedBy: 'reviewer', signedCommit: 'c2' })
+    approve(current, 'T1', 'coordinator', 6)
+    expect(() => approve(current, 'T1', 'coordinator', 6)).toThrow('T1 is not waiting for a sign-off.')
+    completeMerge(current, 'T1', 'c3', 7)
+    expect(current.tasks['T1']).toMatchObject({ state: 'done', approvedBy: 'coordinator', merged: 'c3' })
   })
 
-  it('reopens a signed root task whose merge conflicts onto what it took in, but not one cancelled meanwhile', () => {
+  it("keeps the coordinator's refusal as a failed review and hands the task to a fresh executor session", () => {
     const current = claimed()
     beginReview(current, 'T1', 'executor', 'c1', 3)
     recordVerdict(current, 'T1', review())
+    sendBack(current, 'T1', 'coordinator', 'Duplicates the lexer', 4)
+
+    expect(current.tasks['T1']).toMatchObject({
+      state: 'claimed',
+      signedCommit: undefined,
+      claim: { handoff: true },
+      reviews: [
+        { verdict: 'pass' },
+        { reviewer: 'coordinator', commit: 'c1', verdict: 'fail', findings: 'Duplicates the lexer' },
+      ],
+    })
+    expect(current.tasks['T1']?.log.at(-1)?.event).toBe('reopened: sent back by coordinator: Duplicates the lexer')
+    expect(() => sendBack(current, 'T1', 'coordinator', 'Again', 5)).toThrow('T1 is not waiting for a sign-off.')
+  })
+
+  it('reopens an approved root task whose merge conflicts onto what it took in, but not one cancelled meanwhile', () => {
+    const current = claimed()
+    beginReview(current, 'T1', 'executor', 'c1', 3)
+    recordVerdict(current, 'T1', review())
+    approve(current, 'T1', 'coordinator', 4)
     reopen(current, 'T1', 'conflicts with main', 4, 'main2')
 
     expect(current.tasks['T1']).toMatchObject({
       state: 'claimed',
       signedBy: undefined,
       signedCommit: undefined,
+      approvedBy: undefined,
       base: { bookmark: 'main', commit: 'main2' },
     })
     expect(current.tasks['T1']?.log.at(-1)?.event).toBe('reopened: conflicts with main')

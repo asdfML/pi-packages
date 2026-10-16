@@ -1,6 +1,6 @@
 import type { GovernorConfig } from './config.js'
 
-type TaskState = 'declared' | 'claimed' | 'reviewing' | 'done' | 'cancelled'
+type TaskState = 'declared' | 'claimed' | 'reviewing' | 'approving' | 'done' | 'cancelled'
 
 export interface Criterion {
   id: string
@@ -59,8 +59,8 @@ export interface Claim {
   question?: string | undefined
   stalled?: string | undefined
   /**
-   * A fresh executor session takes over without counting as a restart: the last one handed off, or the coordinator
-   * answered it. The task's log tells the new session which.
+   * A fresh executor session takes over without counting as a restart: the last one handed off, the coordinator
+   * answered it, or the task came back. The task's log tells the new session which.
    */
   handoff?: boolean | undefined
 }
@@ -85,6 +85,8 @@ export interface Task {
   reviews: Review[]
   signedBy?: string | undefined
   signedCommit?: string | undefined
+  /** The coordinator session that signed off a reviewed root task for merging. */
+  approvedBy?: string | undefined
   merged?: string | undefined
   log: { at: number; event: string }[]
 }
@@ -278,7 +280,7 @@ function missingEvidence(task: Task, evidence: Record<string, Evidence>, commit:
 
 /**
  * Records a reviewer's verdict. A pass needs evidence for every criterion and a reviewer who neither declared nor
- * claimed the task; it finishes a subtask, while a root task stays in review until it is merged.
+ * claimed the task; it finishes a subtask, while a root task then waits for the coordinator's sign-off.
  */
 export function recordVerdict(state: State, id: string, review: Review): Task {
   const task = requireTask(state, id)
@@ -286,7 +288,7 @@ export function recordVerdict(state: State, id: string, review: Review): Task {
     throw new Error(`${id} is not in review.`)
   }
   if (review.reviewer === task.declaredBy || review.reviewer === claimOf(state, task)?.sessionId) {
-    throw new Error(`The session that declared or claimed ${id} cannot sign it off.`)
+    throw new Error(`The session that declared or claimed ${id} cannot review it.`)
   }
   if (review.verdict === 'pass') {
     const missing = missingEvidence(task, review.evidence, review.commit)
@@ -303,12 +305,36 @@ export function recordVerdict(state: State, id: string, review: Review): Task {
   }
   task.signedBy = review.reviewer
   task.signedCommit = review.commit
+  task.state = task.parentId === undefined ? 'approving' : 'done'
   logEvent(task, `signed off by ${review.reviewer} on ${review.commit}`, review.at)
-  if (task.parentId !== undefined) {
-    task.state = 'done'
+
+  return task
+}
+
+function awaitingSignOff(state: State, id: string): Task {
+  const task = requireTask(state, id)
+  if (task.state !== 'approving' || task.approvedBy !== undefined) {
+    throw new Error(`${id} is not waiting for a sign-off.`)
   }
 
   return task
+}
+
+/** The coordinator's sign-off, after which the scheduler merges the task. */
+export function approve(state: State, id: string, by: string, now: number): Task {
+  const task = awaitingSignOff(state, id)
+  task.approvedBy = by
+  logEvent(task, `approved by ${by}`, now)
+
+  return task
+}
+
+/** The coordinator's refusal to sign off, kept as a failed review of the commit it was shown. */
+export function sendBack(state: State, id: string, by: string, findings: string, now: number): Task {
+  const task = awaitingSignOff(state, id)
+  task.reviews.push({ reviewer: by, commit: task.signedCommit!, verdict: 'fail', evidence: {}, findings, at: now })
+
+  return reopen(state, id, `sent back by ${by}: ${findings}`, now)
 }
 
 export function completeMerge(state: State, id: string, commit: string, now: number): Task {
@@ -321,16 +347,21 @@ export function completeMerge(state: State, id: string, commit: string, now: num
 }
 
 /**
- * Sends a task in review back to its executor, such as when its merge conflicts or its review ends unfinished. A merge
- * that took in newer work from the bookmark passes `onto`, so later reviews see only the task's own changes. Any other
- * task is left as it is, so a task cancelled meanwhile stays cancelled.
+ * Sends a task in review, or waiting for sign-off, back to its executor, such as when its merge conflicts or its review
+ * ends unfinished. One waiting for sign-off has no executor left, so a fresh session takes it up. A merge that took in
+ * newer work from the bookmark passes `onto`, so later reviews see only the task's own changes. Any other task is left
+ * as it is, so a task cancelled meanwhile stays cancelled.
  */
 export function reopen(state: State, id: string, reason: string, now: number, onto?: string): Task {
   const task = requireTask(state, id)
-  if (task.state === 'reviewing') {
+  if (task.state === 'approving') {
+    task.claim!.handoff = true
+  }
+  if (task.state === 'reviewing' || task.state === 'approving') {
     task.state = 'claimed'
     task.signedBy = undefined
     task.signedCommit = undefined
+    task.approvedBy = undefined
     task.base.commit = onto ?? task.base.commit
     logEvent(task, `reopened: ${reason}`, now)
   }

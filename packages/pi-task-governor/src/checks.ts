@@ -17,7 +17,7 @@ const OUTPUT_TAIL = 4_000
  * check that leaves changes in the working copy fails, and its changes are dropped: evidence must not alter the work.
  */
 export async function runCheck(
-  runtime: Runtime,
+  runtime: Pick<Runtime, 'store' | 'environment'>,
   workspace: Workspace,
   criterion: Criterion,
   commit: string,
@@ -51,7 +51,7 @@ export async function runCheck(
 
 /** Every check of a task on its current head, for re-checking a head that a rebase changed. */
 export async function failedChecks(
-  runtime: Runtime,
+  runtime: Pick<Runtime, 'store' | 'environment'>,
   workspace: Workspace,
   criteria: Criterion[],
   commit: string,

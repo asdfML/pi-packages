@@ -2,7 +2,7 @@ import process from 'node:process'
 import { describe, expect, it, vi } from 'vitest'
 import { readState, storeDirectory, updateState } from '../src/store.js'
 import { claimRoot, declareRoot } from '../src/task.js'
-import { DEAD_PID, PARSER_SPEC, useWorkspace } from './helpers.js'
+import { DEAD_PID, PARSER_SPEC, signedOff, useWorkspace } from './helpers.js'
 import { loadGovernor } from './pi.js'
 
 vi.mock(import('@mzwing/pi-session-hub/api'), async importOriginal => ({
@@ -34,6 +34,8 @@ describe('governor extension', () => {
       'task_show',
       'task_cancel',
       'task_answer',
+      'task_approve',
+      'task_reject',
     ])
     expect(governor.statuses.at(-1)).toBe('governor 0/3')
   })
@@ -83,6 +85,26 @@ describe('governor extension', () => {
     await expect(governor.tool('task_answer', { id: 'T1', answer: 'Try again' })).rejects.toThrow(
       'cancel it and declare it again',
     )
+  })
+
+  it('lets the coordinator alone sign off a reviewed task, which then merges, or send it back', async () => {
+    const governor = loadGovernor({ cwd: workspace.repo, sessionId: 'boss' })
+    await governor.start()
+    await governor.command('coordinate')
+    const approved = await signedOff(workspace, 'a.txt', 'a\n')
+    const refused = await signedOff(workspace, 'b.txt', 'b\n')
+    const bystander = loadGovernor({ cwd: workspace.repo, sessionId: 'bystander' })
+    await bystander.start()
+
+    await expect(bystander.tool('task_approve', { id: approved })).rejects.toThrow('Only the coordinator session')
+    await governor.tool('task_reject', { id: refused, findings: 'Duplicates the lexer' })
+    await governor.tool('task_approve', { id: approved })
+
+    expect(readState(storeDirectory(workspace.repo)).tasks[refused]).toMatchObject({
+      state: 'claimed',
+      reviews: [{ verdict: 'pass' }, { reviewer: 'boss', verdict: 'fail', findings: 'Duplicates the lexer' }],
+    })
+    await vi.waitFor(() => expect(readState(storeDirectory(workspace.repo)).tasks[approved]?.state).toBe('done'))
   })
 
   it('reminds the coordinator to hand off once it has run its turns', async () => {

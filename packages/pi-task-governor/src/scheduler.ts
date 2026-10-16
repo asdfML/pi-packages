@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { isAlive, logPath, spawnSession } from '@mzwing/pi-session-hub/api'
+import { failedChecks } from './checks.js'
 import {
   environmentPath,
   loadEnvironment,
@@ -12,11 +13,11 @@ import {
   saveEnvironment,
   temporaryDirectory,
 } from './env.js'
-import { executorPrompt } from './prompts.js'
+import { executorPrompt, signOffRequest } from './prompts.js'
 import { readState, updateState } from './store.js'
-import { claimRoot, focusOf, isOpen, logEvent, reopen, requireTask, waitsFor } from './task.js'
+import { claimRoot, completeMerge, focusOf, isOpen, logEvent, reopen, requireTask, waitsFor } from './task.js'
 import { describeError } from './tooling.js'
-import { addWorkspace, bookmarkCommit, removeWorkspace } from './vcs.js'
+import { addWorkspace, bookmarkCommit, diff, headOf, mergeInto, removeWorkspace } from './vcs.js'
 
 export const STORE_FLAG = 'governor-store'
 const EXECUTOR_TOOLS: string[] = [
@@ -64,13 +65,18 @@ function sequence(task: Task): number {
 }
 
 /**
- * Runs in the coordinator, woken by events only: declarations, answers, executor exits and executor mail. It
- * launches executors for root tasks whose turn has come within the budget, gives a task a fresh executor session
- * whenever the last one ended before the task did, and removes the workspaces of finished tasks.
+ * Runs in the coordinator, woken by events only: declarations, answers, sign-offs, executor exits and executor mail.
+ * It launches executors for root tasks whose turn has come within the budget, gives a task a fresh executor session
+ * whenever the last one ended before the task did, asks the coordinator to sign off what passed review and merges
+ * what it approved, and removes the workspaces of finished tasks.
  */
 export function createScheduler(host: Host, notify: (message: string, wake: boolean) => void): Scheduler {
   let pass: Promise<void> | undefined
   let again = false
+  // By task and review, so a task that passes again is asked about again; a new coordinator session asks anew.
+  const requested = new Set<string>()
+  // One merge at a time, so tasks never race each other for the bookmark; the next starts when it ends.
+  let merging = false
 
   function stall(store: string, taskId: string, reason: string): void {
     updateState(store, state => {
@@ -169,6 +175,75 @@ export function createScheduler(host: Host, notify: (message: string, wake: bool
     launch(store, task.id)
   }
 
+  async function requestSignOff(repoRoot: string, task: Task): Promise<void> {
+    const [base, head] = [task.base.commit!, task.signedCommit!]
+    const [stat, change] = await Promise.all([diff(repoRoot, base, head, true), diff(repoRoot, base, head, false)])
+    notify(signOffRequest(task, stat, change), true)
+  }
+
+  function returnFromMerge(store: string, taskId: string, reason: string, onto?: string): void {
+    updateState(store, state => reopen(state, taskId, reason, Date.now(), onto))
+    notify(`${taskId} went back to its executor: ${reason}`, false)
+  }
+
+  /** Merges an approved task exactly as its reviewer signed it off, re-running its checks on a rebased head. */
+  async function merge(store: string, repoRoot: string, task: Task): Promise<void> {
+    const { workspace } = task.claim!
+    const bookmark = task.base.bookmark!
+    try {
+      if ((await headOf(repoRoot, workspace)) !== task.signedCommit) {
+        returnFromMerge(store, task.id, 'its workspace changed after its review')
+
+        return
+      }
+      const checks = { store, environment: loadEnvironment(store, task.id).changes }
+      const result = await mergeInto(repoRoot, workspace, bookmark, `${task.id}: merge ${bookmark}`, async () =>
+        failedChecks(checks, workspace, task.spec.acceptance, await headOf(repoRoot, workspace)),
+      )
+      switch (result.kind) {
+        case 'merged': {
+          const finished = updateState(store, state => {
+            completeMerge(state, task.id, result.commit, Date.now())
+
+            return Object.values(state.tasks).every(other => !isOpen(other))
+          })
+          // Only the merge that finishes the last task wakes the coordinator, which may owe the user its outcome.
+          notify(
+            finished
+              ? `${task.id} is merged into ${bookmark}, and every task is finished.`
+              : `${task.id} is merged into ${bookmark}.`,
+            finished,
+          )
+          break
+        }
+        case 'conflicted':
+          returnFromMerge(
+            store,
+            task.id,
+            `merging into ${bookmark} conflicted; the workspace holds a merge commit with the conflict markers`,
+            result.onto,
+          )
+          break
+        case 'failed-checks':
+          returnFromMerge(
+            store,
+            task.id,
+            `its checks failed after rebasing onto ${bookmark}:\n${result.detail}`,
+            result.onto,
+          )
+          break
+      }
+    } catch (error) {
+      updateState(store, state => {
+        requireTask(state, task.id).approvedBy = undefined
+      })
+      notify(
+        `Merging ${task.id} into ${bookmark} failed: ${describeError(error)}\nApprove it again to retry, or send it back with task_reject.`,
+        true,
+      )
+    }
+  }
+
   async function cleanUp(store: string, repoRoot: string, task: Task): Promise<void> {
     const { workspace } = task.claim!
     await removeWorkspace(repoRoot, workspace)
@@ -200,11 +275,25 @@ export function createScheduler(host: Host, notify: (message: string, wake: bool
         notify(`Cleaning up after ${task.id} failed: ${describeError(error)}`, false)
       }
     }
+    for (const task of roots.filter(root => root.state === 'approving')) {
+      const request = `${task.id}:${task.reviews.length}`
+      if (task.approvedBy === undefined && !requested.has(request)) {
+        requested.add(request)
+        await requestSignOff(repoRoot, task)
+      } else if (task.approvedBy !== undefined && !merging) {
+        merging = true
+        void merge(store, repoRoot, task).finally(() => {
+          merging = false
+          tick()
+        })
+      }
+    }
     if (state.paused) {
       return
     }
     for (const task of roots) {
-      const status = task.claim === undefined || !isOpen(task) ? undefined : executorStatus(task.claim)
+      const status =
+        task.claim === undefined || !isOpen(task) || task.state === 'approving' ? undefined : executorStatus(task.claim)
       if (status === 'stopped' || status === 'handed-off') {
         relaunch(store, task, status)
       }
