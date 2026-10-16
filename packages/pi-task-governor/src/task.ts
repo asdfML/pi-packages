@@ -75,6 +75,8 @@ export interface Task {
    * when work on the task starts, and moved when a merge that did not land took in newer work from the bookmark.
    */
   base: { bookmark?: string | undefined; commit?: string | undefined }
+  /** Root tasks of the same bookmark that must be merged before this one starts. */
+  after?: string[] | undefined
   state: TaskState
   declaredBy: string
   claim?: Claim | undefined
@@ -146,6 +148,11 @@ export function focusOf(state: State, root: Task): Task {
   return focusChain(state, root).at(-1)!
 }
 
+/** The tasks a declared root task still waits for. */
+export function waitsFor(state: State, task: Task): string[] {
+  return (task.after ?? []).filter(id => requireTask(state, id).state !== 'done')
+}
+
 function buildSpec(input: SpecInput, globalChecks: GovernorConfig['globalChecks']): Spec {
   return {
     problem: input.problem,
@@ -159,19 +166,40 @@ function buildSpec(input: SpecInput, globalChecks: GovernorConfig['globalChecks'
   }
 }
 
-export function declareRoot(state: State, input: SpecInput, bookmark: string, by: string, now: number): Task {
+/** Waiting for a root task of the same bookmark means starting from a bookmark that holds its merge. */
+export function declareRoot(
+  state: State,
+  input: SpecInput,
+  bookmark: string,
+  after: string[],
+  by: string,
+  now: number,
+): Task {
+  for (const id of after) {
+    const other = requireTask(state, id)
+    if (other.parentId !== undefined || other.state === 'cancelled' || other.base.bookmark !== bookmark) {
+      throw new Error(
+        `A task can only wait for root tasks that merge into ${bookmark} and are not cancelled; ${id} is not one.`,
+      )
+    }
+  }
   state.seq += 1
   const task: Task = {
     id: `T${state.seq}`,
     title: input.title,
     spec: buildSpec(input, state.config.globalChecks),
     base: { bookmark },
+    after,
     state: 'declared',
     declaredBy: by,
     reviews: [],
     log: [],
   }
-  logEvent(task, `declared by ${by}, to merge into ${bookmark}`, now)
+  logEvent(
+    task,
+    `declared by ${by}, to merge into ${bookmark}${after.length === 0 ? '' : ` after ${after.join(', ')}`}`,
+    now,
+  )
   state.tasks[task.id] = task
 
   return task
@@ -310,6 +338,7 @@ export function reopen(state: State, id: string, reason: string, now: number, on
   return task
 }
 
+/** Cancels a task together with its open subtasks and the declared tasks that wait for it. */
 export function cancelTask(state: State, id: string, by: string, reason: string, now: number): Task[] {
   const task = requireTask(state, id)
   if (!isOpen(task)) {
@@ -317,21 +346,33 @@ export function cancelTask(state: State, id: string, by: string, reason: string,
   }
   task.state = 'cancelled'
   logEvent(task, `cancelled by ${by}: ${reason}`, now)
+  const dependents = Object.values(state.tasks).filter(other => other.after?.includes(id) === true)
 
   return [
     task,
     ...childrenOf(state, id)
       .filter(isOpen)
       .flatMap(child => cancelTask(state, child.id, by, `its parent ${id} was cancelled`, now)),
+    // Checked as each one comes up, since cancelling an earlier one can reach it through another task it waits for.
+    ...dependents.flatMap(dependent =>
+      isOpen(dependent) ? cancelTask(state, dependent.id, by, `it waited for ${id}, which was cancelled`, now) : [],
+    ),
   ]
 }
 
 export function renderBrief(state: State, task: Task): string {
   const parent = task.parentId === undefined ? undefined : requireTask(state, task.parentId)
+  const after = task.after ?? []
 
   return [
     `${task.id}: ${task.title}`,
     ...(parent === undefined ? [] : [`Subtask of ${parent.id}: ${parent.title}`]),
+    ...(after.length === 0
+      ? []
+      : [
+          'Builds on these tasks, merged before it starts:',
+          ...after.map(id => `- ${id}: ${requireTask(state, id).title}`),
+        ]),
     `Problem: ${task.spec.problem}`,
     `Scope (what this task changes): ${task.spec.scope}`,
     `Boundary (what it may reach): ${task.spec.boundary}`,

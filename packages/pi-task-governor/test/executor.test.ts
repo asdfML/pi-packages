@@ -27,7 +27,7 @@ describe('executor session', () => {
     initStore(store, DEFAULT_CONFIG)
     updateState(store, state => {
       state.lease = { sessionId: 'boss', pid: process.pid }
-      declareRoot(state, PARSER_SPEC, 'main', 'boss', 1)
+      declareRoot(state, PARSER_SPEC, 'main', [], 'boss', 1)
       claimRoot(state, 'T1', { sessionId: 'executor-1', pid, workspace: { name: 'task-T1', path }, restarts: 0 }, 2)
     })
     saveEnvironment(store, 'T1', { changes: { TASK_FLAG: 'on' } })

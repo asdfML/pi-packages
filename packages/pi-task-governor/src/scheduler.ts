@@ -14,7 +14,7 @@ import {
 } from './env.js'
 import { executorPrompt } from './prompts.js'
 import { readState, updateState } from './store.js'
-import { claimRoot, focusOf, isOpen, logEvent, reopen, requireTask } from './task.js'
+import { claimRoot, focusOf, isOpen, logEvent, reopen, requireTask, waitsFor } from './task.js'
 import { describeError } from './tooling.js'
 import { addWorkspace, bookmarkCommit, removeWorkspace } from './vcs.js'
 
@@ -65,8 +65,8 @@ function sequence(task: Task): number {
 
 /**
  * Runs in the coordinator, woken by events only: declarations, answers, executor exits and executor mail. It
- * launches executors for queued root tasks within the budget, gives a task a fresh executor session whenever the
- * last one ended before the task did, and removes the workspaces of finished tasks.
+ * launches executors for root tasks whose turn has come within the budget, gives a task a fresh executor session
+ * whenever the last one ended before the task did, and removes the workspaces of finished tasks.
  */
 export function createScheduler(host: Host, notify: (message: string, wake: boolean) => void): Scheduler {
   let pass: Promise<void> | undefined
@@ -213,7 +213,7 @@ export function createScheduler(host: Host, notify: (message: string, wake: bool
       task => isOpen(task) && task.claim !== undefined && ['preparing', 'running'].includes(executorStatus(task.claim)),
     ).length
     const queued = roots
-      .filter(task => task.state === 'declared')
+      .filter(task => task.state === 'declared' && waitsFor(state, task).length === 0)
       .sort((left, right) => sequence(left) - sequence(right))
       .slice(0, Math.max(0, state.config.maxExecutors - busy))
     await Promise.all(queued.map(async task => start(store, repoRoot, task.id)))

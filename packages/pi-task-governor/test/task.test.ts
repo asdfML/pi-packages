@@ -14,6 +14,7 @@ import {
   renderBrief,
   renderTree,
   reopen,
+  waitsFor,
 } from '../src/task.js'
 import { PARSER_SPEC } from './helpers.js'
 
@@ -25,7 +26,7 @@ function state(): State {
 
 function claimed(): State {
   const current = state()
-  declareRoot(current, PARSER_SPEC, 'main', 'coordinator', 1)
+  declareRoot(current, PARSER_SPEC, 'main', [], 'coordinator', 1)
   claimRoot(current, 'T1', CLAIM, 2)
 
   return current
@@ -54,8 +55,8 @@ function review(overrides: Partial<Review> = {}): Review {
 describe('declaring tasks', () => {
   it('numbers root tasks and appends the global checks to the acceptance criteria', () => {
     const current = state()
-    declareRoot(current, PARSER_SPEC, 'main', 'coordinator', 1)
-    const second = declareRoot(current, PARSER_SPEC, 'dev', 'coordinator', 1)
+    declareRoot(current, PARSER_SPEC, 'main', [], 'coordinator', 1)
+    const second = declareRoot(current, PARSER_SPEC, 'dev', [], 'coordinator', 1)
 
     expect(second).toMatchObject({ id: 'T2', state: 'declared', base: { bookmark: 'dev' }, declaredBy: 'coordinator' })
     expect(second.spec.acceptance.map(criterion => criterion.id)).toEqual(['A1', 'A2', 'G1'])
@@ -71,6 +72,27 @@ describe('declaring tasks', () => {
     expect(child).toMatchObject({ id: 'T1.1', parentId: 'T1', state: 'claimed', base: { commit: 'c0' } })
     expect(grandchild.id).toBe('T1.1.1')
     expect(focusOf(current, current.tasks['T1']!).id).toBe('T1.1.1')
+  })
+  it('lets a root task wait only for uncancelled root tasks of its bookmark, until they are merged', () => {
+    const current = claimed()
+    declareChild(current, 'T1', PARSER_SPEC, 'executor', 'c0', 3)
+    declareRoot(current, PARSER_SPEC, 'dev', [], 'coordinator', 4)
+    cancelTask(current, declareRoot(current, PARSER_SPEC, 'main', [], 'coordinator', 5).id, 'coordinator', 'moot', 6)
+    const waiting = declareRoot(current, PARSER_SPEC, 'main', ['T1'], 'coordinator', 7)
+
+    expect(() => declareRoot(current, PARSER_SPEC, 'main', ['T9'], 'coordinator', 8)).toThrow('There is no task T9.')
+    for (const other of ['T1.1', 'T2', 'T3']) {
+      expect(() => declareRoot(current, PARSER_SPEC, 'main', [other], 'coordinator', 8)).toThrow(
+        `A task can only wait for root tasks that merge into main and are not cancelled; ${other} is not one.`,
+      )
+    }
+    expect(waiting.log[0]?.event).toBe('declared by coordinator, to merge into main after T1')
+    expect(waitsFor(current, waiting)).toEqual(['T1'])
+    expect(renderBrief(current, waiting)).toContain(
+      'Builds on these tasks, merged before it starts:\n- T1: Fix the parser',
+    )
+    completeMerge(current, 'T1', 'c1', 9)
+    expect(waitsFor(current, waiting)).toEqual([])
   })
 })
 
@@ -155,16 +177,21 @@ describe('reviewing tasks', () => {
   })
 })
 
-it('cancels a task together with its open subtasks', () => {
+it('cancels a task together with its open subtasks and the tasks waiting for it', () => {
   const current = claimed()
   declareChild(current, 'T1', PARSER_SPEC, 'executor', 'c0', 3)
   declareChild(current, 'T1.1', PARSER_SPEC, 'executor', 'c0', 3)
+  declareRoot(current, PARSER_SPEC, 'main', ['T1'], 'coordinator', 3)
+  declareRoot(current, PARSER_SPEC, 'main', ['T1', 'T2'], 'coordinator', 3)
 
   expect(cancelTask(current, 'T1', 'coordinator', 'not needed', 4).map(task => task.id)).toEqual([
     'T1',
     'T1.1',
     'T1.1.1',
+    'T2',
+    'T3',
   ])
+  expect(current.tasks['T3']?.log.at(-1)?.event).toBe('cancelled by coordinator: it waited for T2, which was cancelled')
   expect(() => cancelTask(current, 'T1.1', 'coordinator', 'again', 5)).toThrow('already cancelled')
 })
 

@@ -21,7 +21,7 @@ import { registerReviewerTools } from './reviewer.js'
 import { requireRole, resumesLease } from './runtime.js'
 import { createScheduler, executorStatus, STORE_FLAG } from './scheduler.js'
 import { findRepoRoot, readState, storeDirectory, storeExists, updateState } from './store.js'
-import { claimedRoot } from './task.js'
+import { claimedRoot, isOpen, waitsFor } from './task.js'
 import { describeError } from './tooling.js'
 import { registerWorkTools } from './work.js'
 
@@ -32,16 +32,19 @@ const WORDS = /\s+/
 function statusText(state: State): string {
   const roots = Object.values(state.tasks).filter(task => task.parentId === undefined)
   const statuses = roots.flatMap(task =>
-    task.claim === undefined || task.state === 'done' || task.state === 'cancelled' ? [] : [executorStatus(task.claim)],
+    task.claim === undefined || !isOpen(task) ? [] : [executorStatus(task.claim)],
   )
   const count = (status: string): number => statuses.filter(current => current === status).length
-  const queued = roots.filter(task => task.state === 'declared').length
+  const declared = roots.filter(task => task.state === 'declared')
+  const waiting = declared.filter(task => waitsFor(state, task).length > 0).length
+  const part = (amount: number, label: string): string[] => (amount > 0 ? [`${amount} ${label}`] : [])
 
   return [
     `governor ${count('preparing') + count('running')}/${state.config.maxExecutors}`,
-    ...(queued > 0 ? [`${queued} queued`] : []),
-    ...(count('asking') > 0 ? [`${count('asking')} asking`] : []),
-    ...(count('stalled') > 0 ? [`${count('stalled')} stalled`] : []),
+    ...part(declared.length - waiting, 'queued'),
+    ...part(waiting, 'waiting'),
+    ...part(count('asking'), 'asking'),
+    ...part(count('stalled'), 'stalled'),
     ...(state.paused ? ['paused'] : []),
   ].join(' · ')
 }

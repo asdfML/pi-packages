@@ -17,7 +17,7 @@ Requires Pi 1.2.0 or later and jj 0.46 or later. A repository with an `.envrc` a
 
 Run `/governor coordinate` in the main workspace of a jj repository. That session becomes the coordinator: tell it what you want, and it declares the tasks. From then on:
 
-- Up to `maxExecutors` tasks are worked at once, each in its own workspace, inside the environment of the repository's `.envrc` or `flake.nix` and with a `$TMPDIR` of its own.
+- Up to `maxExecutors` tasks are worked at once, each in its own workspace, inside the environment of the repository's `.envrc` or `flake.nix` and with a `$TMPDIR` of its own. A task declared to wait for others starts once they are merged.
 - Each executor works in fresh sessions. A new one takes over from the task board and the note kept on the task whenever the last one hands off, reaches `roles.executor.maxTurns` turns, or asks the coordinator and gets the answer. An executor that keeps stopping before its task ends is reported as stalled.
 - A task that runs into a separate problem opens a subtask and finishes it first; a task is reviewed only after its subtasks.
 - A signed-off task merges into the bookmark it was declared against, which only ever moves forward. A merge that conflicts goes back to the executor to resolve and review again. The workspace of a finished task is removed, with its `$TMPDIR`.

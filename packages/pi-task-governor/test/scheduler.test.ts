@@ -8,7 +8,7 @@ import { DEFAULT_CONFIG } from '../src/config.js'
 import { environmentPath } from '../src/env.js'
 import { createScheduler } from '../src/scheduler.js'
 import { initStore, readState, storeDirectory, updateState } from '../src/store.js'
-import { beginReview, cancelTask, claimRoot, declareRoot, logEvent } from '../src/task.js'
+import { beginReview, cancelTask, claimRoot, completeMerge, declareRoot, logEvent } from '../src/task.js'
 import { DEAD_PID, PARSER_SPEC, useWorkspace } from './helpers.js'
 import { jj } from './jj.js'
 
@@ -42,7 +42,7 @@ describe('scheduler', () => {
     updateState(store, state => {
       state.lease = { sessionId: 'boss', pid: process.pid }
       for (let index = 0; index < tasks; index += 1) {
-        declareRoot(state, PARSER_SPEC, 'main', 'boss', 1)
+        declareRoot(state, PARSER_SPEC, 'main', [], 'boss', 1)
       }
     })
     const notify = vi.fn()
@@ -87,6 +87,23 @@ describe('scheduler', () => {
     expect(launched?.prompt).toContain('T1: Fix the parser')
     // Executors orchestrate; only their developers change code.
     expect(launched?.tools?.filter(tool => ['bash', 'edit', 'write'].includes(tool))).toEqual([])
+  })
+
+  it('starts a task only once the tasks it waits for are merged', async () => {
+    const { store, scheduler } = setUp({}, 0)
+    updateState(store, state => {
+      declareRoot(state, PARSER_SPEC, 'main', [], 'boss', 1)
+      declareRoot(state, PARSER_SPEC, 'main', ['T1'], 'boss', 1)
+    })
+
+    scheduler.tick()
+    await vi.waitFor(() => expect(spawnSession).toHaveBeenCalledOnce())
+    expect(readState(store).tasks['T2']?.state).toBe('declared')
+    updateState(store, state => completeMerge(state, 'T1', 'c1', 2))
+    scheduler.tick()
+
+    await vi.waitFor(() => expect(spawnSession).toHaveBeenCalledTimes(2))
+    expect(readState(store).tasks['T2']?.state).toBe('claimed')
   })
 
   it('relaunches an executor that exits early in a fresh session each time, until the task stalls', async () => {
@@ -201,7 +218,7 @@ describe('scheduler', () => {
       state.paused = true
       state.tasks['T1']!.state = 'done'
       state.tasks['T1']!.claim!.pid = DEAD_PID
-      declareRoot(state, PARSER_SPEC, 'main', 'boss', 3)
+      declareRoot(state, PARSER_SPEC, 'main', [], 'boss', 3)
     })
 
     scheduler.tick()

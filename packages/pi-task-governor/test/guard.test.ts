@@ -18,7 +18,7 @@ describe('guard', () => {
     const store = storeDirectory(workspace.repo)
     initStore(store, DEFAULT_CONFIG)
     updateState(store, state => {
-      declareRoot(state, PARSER_SPEC, 'main', 'boss', 1)
+      declareRoot(state, PARSER_SPEC, 'main', [], 'boss', 1)
       claimRoot(
         state,
         'T1',

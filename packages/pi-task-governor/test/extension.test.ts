@@ -65,7 +65,7 @@ describe('governor extension', () => {
     await governor.start()
     await governor.command('coordinate')
     updateState(storeDirectory(workspace.repo), state => {
-      declareRoot(state, PARSER_SPEC, 'main', 'boss', 1)
+      declareRoot(state, PARSER_SPEC, 'main', [], 'boss', 1)
       claimRoot(
         state,
         'T1',

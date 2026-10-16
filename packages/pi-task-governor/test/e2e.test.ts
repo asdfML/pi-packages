@@ -41,7 +41,7 @@ describe('governed task end to end', () => {
     })
     updateState(store, state => {
       state.lease = { sessionId: 'boss', pid: process.pid }
-      declareRoot(state, ADD_FILE_SPEC, 'main', 'boss', 1)
+      declareRoot(state, ADD_FILE_SPEC, 'main', [], 'boss', 1)
     })
     // Under vitest the running script is vitest's; with it hidden, the hub starts the `pi` on PATH.
     const script = process.argv[1]

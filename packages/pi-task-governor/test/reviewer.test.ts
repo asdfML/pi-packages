@@ -35,7 +35,7 @@ describe('reviewer session', () => {
     const head = await headOf(workspace.repo, task)
     updateState(store, state => {
       state.lease = { sessionId: 'boss', pid: process.pid }
-      declareRoot(state, ADD_FILE_SPEC, 'main', 'boss', 1)
+      declareRoot(state, ADD_FILE_SPEC, 'main', [], 'boss', 1)
       claimRoot(state, 'T1', { sessionId: 'executor-1', pid: process.pid, workspace: task, restarts: 0 }, 2)
       state.tasks['T1']!.base.commit = base
       beginReview(state, 'T1', 'executor-1', head, 3)

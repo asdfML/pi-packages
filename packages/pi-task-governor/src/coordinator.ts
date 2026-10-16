@@ -9,14 +9,19 @@ import { loadConfig } from './config.js'
 import { leaseIsFree, requireRole } from './runtime.js'
 import { executorStatus } from './scheduler.js'
 import { findRepoRoot, initStore, readState, storeDirectory, updateState } from './store.js'
-import { cancelTask, logEvent, renderBrief, renderTree, requireTask } from './task.js'
+import { cancelTask, logEvent, renderBrief, renderTree, requireTask, waitsFor } from './task.js'
 import { nonBlank, textResult } from './tooling.js'
 
 const COORDINATOR_TOOLS: string[] = ['task_declare', 'task_list', 'task_show', 'task_cancel', 'task_answer']
 // The coordinator writes task specs; code reaches the repository only through tasks, not through pi-subagents' agents either.
 const WITHHELD_FROM_COORDINATOR = new Set(['edit', 'write', 'session_spawn', 'subagent', 'steer_subagent'])
 
-function describeRun(task: Task): string {
+function describeRun(state: State, task: Task): string {
+  if (task.state === 'declared') {
+    const waiting = waitsFor(state, task)
+
+    return waiting.length === 0 ? '' : `waits for ${waiting.join(', ')}`
+  }
   const claim = task.claim
   if (claim === undefined) {
     return ''
@@ -31,14 +36,16 @@ function describeRun(task: Task): string {
 }
 
 export function renderBoard(state: State): string {
-  return renderTree(state, describeRun)
+  return renderTree(state, task => describeRun(state, task))
 }
 
 function renderDetails(state: State, task: Task): string {
+  const run = describeRun(state, task)
+
   return [
     renderBrief(state, task),
     '',
-    `State: ${task.state}${task.claim === undefined ? '' : ` · ${describeRun(task)} · workspace ${task.claim.workspace.path}`}`,
+    `State: ${task.state}${run === '' ? '' : ` · ${run}`}${task.claim === undefined ? '' : ` · workspace ${task.claim.workspace.path}`}`,
     ...(task.note === undefined ? [] : [`Note: ${task.note}`]),
     ...task.reviews.map(
       review =>
