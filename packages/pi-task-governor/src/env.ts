@@ -111,13 +111,20 @@ async function runSetup(workspace: string, env: NodeJS.ProcessEnv, command: stri
   }
 }
 
-/** Captures the workspace's environment, then runs the setup commands in it. */
+/** The task's own TMPDIR, beside its workspace so jj never snapshots it, and removed with it. */
+export function temporaryDirectory(workspace: string): string {
+  return `${workspace}.tmp`
+}
+
+/** Captures the workspace's environment with the task's own TMPDIR, then runs the setup commands in it. */
 export async function prepareEnvironment(
   workspace: string,
   provider: EnvProvider,
   setup: string[],
 ): Promise<TaskEnvironment> {
-  const changes = await captureChanges(workspace, provider)
+  const temporary = temporaryDirectory(workspace)
+  mkdirSync(temporary, { recursive: true })
+  const changes = { ...(await captureChanges(workspace, provider)), TMPDIR: temporary }
   // Located before setup runs, since a lookup after it would copy whatever setup built into the store as well.
   const storeCopy = await findStoreCopy(workspace)
   const env = applyChanges(process.env, changes)

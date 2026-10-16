@@ -80,6 +80,7 @@ describe('governed task end to end', () => {
     ])
     expect(task.signedBy).not.toBe(task.claim?.sessionId)
     await vi.waitFor(() => expect(existsSync(task.claim!.workspace.path)).toBe(false), { timeout: 60_000 })
+    expect(existsSync(`${task.claim!.workspace.path}.tmp`)).toBe(false)
     expect(readFileSync(join(workspace.repo, 'shared.txt'), 'utf8')).toBe('line1\nline2\nline3\n')
   }, 240_000)
 })

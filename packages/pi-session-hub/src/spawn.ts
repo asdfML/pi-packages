@@ -18,6 +18,8 @@ export interface SpawnOptions {
   tools?: string[] | undefined
   /** Further CLI options, placed before the prompt. */
   args?: string[] | undefined
+  /** Variables set in the new session's environment over this one's. */
+  env?: Record<string, string> | undefined
   /** The session this one works for; pi-permission-system sends the new session's permission asks there. */
   parentSessionId?: string | undefined
 }
@@ -65,10 +67,11 @@ export function spawnSession(options: SpawnOptions): ChildProcess {
   try {
     const child = spawn(invocation.command, invocation.args, {
       cwd: options.cwd,
-      env:
-        options.parentSessionId === undefined
-          ? process.env
-          : { ...process.env, PI_SUBAGENT_PARENT_SESSION: options.parentSessionId },
+      env: {
+        ...process.env,
+        ...options.env,
+        ...(options.parentSessionId === undefined ? {} : { PI_SUBAGENT_PARENT_SESSION: options.parentSessionId }),
+      },
       detached: true,
       stdio: ['ignore', output, output],
     })

@@ -68,6 +68,7 @@ describe('scheduler', () => {
     expect(state.tasks['T2']?.state).toBe('declared')
     expect(claim.workspace).toEqual({ name: 'task-T1', path: join(`${workspace.repo}.tasks`, 'T1') })
     expect(existsSync(join(claim.workspace.path, 'shared.txt'))).toBe(true)
+    expect(existsSync(`${claim.workspace.path}.tmp`)).toBe(true)
     expect(state.tasks['T1']?.base.commit).toBe(
       jj(workspace.repo, 'log', '--no-graph', '-r', 'main', '-T', 'commit_id'),
     )
@@ -77,6 +78,7 @@ describe('scheduler', () => {
       cwd: claim.workspace.path,
       sessionId: claim.sessionId,
       args: ['--no-approve', '--no-mcp', '--governor-store', store],
+      env: { TMPDIR: `${claim.workspace.path}.tmp` },
     })
     expect(launched.prompt).toContain('T1: Fix the parser')
     // Executors orchestrate; only their developers change code.
@@ -196,6 +198,7 @@ describe('scheduler', () => {
     scheduler.tick()
 
     await vi.waitFor(() => expect(existsSync(path)).toBe(false))
+    expect(existsSync(`${path}.tmp`)).toBe(false)
     expect(jj(workspace.repo, 'workspace', 'list')).not.toContain('task-T1')
     expect(readState(store).tasks['T2']?.state).toBe('declared')
   })

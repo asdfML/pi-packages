@@ -1,10 +1,17 @@
 import type { Claim, State, Task } from './task.js'
 import type { Host } from './tooling.js'
 import { randomUUID } from 'node:crypto'
-import { existsSync } from 'node:fs'
+import { existsSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { isAlive, logPath, spawnSession } from '@mzwing/pi-session-hub/api'
-import { environmentPath, loadEnvironment, prepareEnvironment, releaseEnvironment, saveEnvironment } from './env.js'
+import {
+  environmentPath,
+  loadEnvironment,
+  prepareEnvironment,
+  releaseEnvironment,
+  saveEnvironment,
+  temporaryDirectory,
+} from './env.js'
 import { executorResumePrompt, executorStartPrompt } from './prompts.js'
 import { readState, updateState } from './store.js'
 import { claimRoot, focusOf, isOpen, reopen, requireTask } from './task.js'
@@ -89,6 +96,8 @@ export function createScheduler(host: Host, notify: (message: string, wake: bool
         tools: EXECUTOR_TOOLS,
         // `--tools` alone keeps MCP tools, which the executor's fixed tool set leaves out.
         args: ['--no-approve', '--no-mcp', `--${STORE_FLAG}`, store],
+        // Pi's own temporary files, and the in-process developers and reviewers, use it too.
+        env: { TMPDIR: temporaryDirectory(claim.workspace.path) },
         // So what would ask in the executor, or in its developers and reviewers, is answered by the coordinator.
         parentSessionId: state.lease!.sessionId,
       })
@@ -152,7 +161,9 @@ export function createScheduler(host: Host, notify: (message: string, wake: bool
   }
 
   async function cleanUp(store: string, repoRoot: string, task: Task): Promise<void> {
-    await removeWorkspace(repoRoot, task.claim!.workspace)
+    const { workspace } = task.claim!
+    await removeWorkspace(repoRoot, workspace)
+    rmSync(temporaryDirectory(workspace.path), { recursive: true, force: true })
     if (existsSync(environmentPath(store, task.id))) {
       await releaseEnvironment(loadEnvironment(store, task.id))
     }

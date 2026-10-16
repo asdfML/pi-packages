@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { applyChanges, flakeChanges, loadEnvironment, prepareEnvironment, saveEnvironment } from '../src/env.js'
@@ -41,22 +41,28 @@ describe('task environment', () => {
     expect(flakeChanges(output, '/usr/bin')).toEqual({ PATH: '/nix/store/hello/bin:/usr/bin', FOO: 'bar' })
   })
 
-  it('captures an .envrc through direnv and runs setup inside it', async () => {
+  it('captures an .envrc through direnv with a TMPDIR of the task, and runs setup inside it', async () => {
     const directory = taskDirectory({ '.envrc': 'export TASK_FLAG=on\n' })
 
-    const environment = await prepareEnvironment(directory, 'auto', ['printf "%s" "$TASK_FLAG" > setup.out'])
+    const environment = await prepareEnvironment(directory, 'auto', [
+      'printf "%s %s" "$TASK_FLAG" "$TMPDIR" > setup.out',
+    ])
 
-    expect(environment.changes['TASK_FLAG']).toBe('on')
+    expect(environment.changes).toMatchObject({ TASK_FLAG: 'on', TMPDIR: `${directory}.tmp` })
+    expect(existsSync(`${directory}.tmp`)).toBe(true)
     expect(environment.storeCopy).toBeUndefined()
-    expect(readFileSync(join(directory, 'setup.out'), 'utf8')).toBe('on')
+    expect(readFileSync(join(directory, 'setup.out'), 'utf8')).toBe(`on ${directory}.tmp`)
     saveEnvironment(workspace.root, 'T1', environment)
     expect(loadEnvironment(workspace.root, 'T1')).toEqual(environment)
   })
 
-  it('needs nothing without an .envrc or flake, and reports a failing setup with its output', async () => {
+  it('needs only its TMPDIR without an .envrc or flake, and reports a failing setup with its output', async () => {
     const directory = taskDirectory({})
 
-    expect(await prepareEnvironment(directory, 'auto', [])).toEqual({ changes: {}, storeCopy: undefined })
+    expect(await prepareEnvironment(directory, 'auto', [])).toEqual({
+      changes: { TMPDIR: `${directory}.tmp` },
+      storeCopy: undefined,
+    })
     await expect(prepareEnvironment(directory, 'none', ['echo "lockfile is stale" >&2; exit 1'])).rejects.toThrow(
       'Setup command `echo "lockfile is stale" >&2; exit 1` failed: lockfile is stale',
     )

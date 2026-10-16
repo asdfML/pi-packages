@@ -45,9 +45,19 @@ describe('spawnSession', () => {
     )
   })
 
-  it('names the session it works for, which pi-permission-system sends its permission asks to', () => {
-    spawnSession({ cwd: '/workspace', sessionId: 'task-1', prompt: 'go', parentSessionId: 'coordinator-1' })
+  it('sets its variables, and names the session it works for, which pi-permission-system sends its permission asks to', () => {
+    spawnSession({
+      cwd: '/workspace',
+      sessionId: 'task-1',
+      prompt: 'go',
+      env: { TMPDIR: '/workspace.tmp' },
+      parentSessionId: 'coordinator-1',
+    })
 
-    expect(vi.mocked(spawn).mock.calls.at(-1)?.[2]?.env?.['PI_SUBAGENT_PARENT_SESSION']).toBe('coordinator-1')
+    expect(vi.mocked(spawn).mock.calls.at(-1)?.[2]?.env).toMatchObject({
+      PATH: process.env['PATH'],
+      TMPDIR: '/workspace.tmp',
+      PI_SUBAGENT_PARENT_SESSION: 'coordinator-1',
+    })
   })
 })

@@ -17,10 +17,10 @@ Requires Pi 1.2.0 or later and jj 0.46 or later. A repository with an `.envrc` a
 
 Run `/governor coordinate` in the main workspace of a jj repository. That session becomes the coordinator: tell it what you want, and it declares the tasks. From then on:
 
-- Up to `maxExecutors` tasks are worked at once, each in its own workspace and inside the environment of the repository's `.envrc` or `flake.nix`.
+- Up to `maxExecutors` tasks are worked at once, each in its own workspace, inside the environment of the repository's `.envrc` or `flake.nix` and with a `$TMPDIR` of its own.
 - An executor that needs a decision asks the coordinator and is restarted with the answer. One that stops before its task ends is restarted a few times, then reported as stalled.
 - A task that runs into a separate problem opens a subtask and finishes it first; a task is reviewed only after its subtasks.
-- A signed-off task merges into the bookmark it was declared against, which only ever moves forward. A merge that conflicts goes back to the executor to resolve and review again. The workspace of a finished task is removed.
+- A signed-off task merges into the bookmark it was declared against, which only ever moves forward. A merge that conflicts goes back to the executor to resolve and review again. The workspace of a finished task is removed, with its `$TMPDIR`.
 
 Governed sessions other than the coordinator cannot run `git`, `jj` or `pi`, the coordinator works without Pi's edit and write tools and without pi-subagents' agents, and the session that declared or worked a task cannot sign it off. These rules stop a model's habits and slips, not one set on getting around them.
 
