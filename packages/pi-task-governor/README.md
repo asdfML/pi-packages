@@ -24,7 +24,7 @@ Run `/governor coordinate` in the main workspace of a jj repository. That sessio
 
 Governed sessions other than the coordinator cannot run `git`, `jj` or `pi`, the coordinator works without Pi's edit and write tools and without pi-subagents' agents, and the session that declared or worked a task cannot sign it off. These rules stop a model's habits and slips, not one set on getting around them.
 
-`/governor` shows the task tree. `/governor pause` and `/governor resume` stop and restart launching executors, `/governor unlock [minutes]` lifts the `git`, `jj` and `pi` block in the current session for 30 minutes or the given number (`0` restores it), and `/governor handoff` continues coordinating in a fresh session. These commands work only in Pi's interactive TUI.
+`/governor` shows the task tree. `/governor pause` and `/governor resume` stop and restart launching executors, `/governor unlock [minutes]` lifts the `git`, `jj` and `pi` block in the current session for 30 minutes or the given number (`0` restores it), and `/governor handoff` continues coordinating in a fresh session, which the governor suggests once the coordinator has run `roles.coordinator.maxTurns` turns. These commands work only in Pi's interactive TUI.
 
 Tasks are kept in `.jj/pi-task-governor/` inside the repository, out of version control.
 
@@ -34,19 +34,20 @@ With [`@gotgenes/pi-permission-system`](https://github.com/gotgenes/pi-packages/
 
 Optional. `~/.pi/agent/extensions/pi-task-governor/config.json` and `.pi/extensions/pi-task-governor/config.json` are merged, the project over the global one and role by role; the project file is read only once Pi trusts the project. The config is read when `/governor coordinate` runs, and executors use the copy saved then.
 
-| Field                       | Default        | Description                                                                                         |
-| --------------------------- | -------------- | --------------------------------------------------------------------------------------------------- |
-| `workspaceRoot`             | `<repo>.tasks` | Where task workspaces go, relative to the repository                                                |
-| `maxExecutors`              | `3`            | Tasks worked at once                                                                                |
-| `defaultBookmark`           | `main`         | Bookmark a task branches from and merges into, unless it names another                              |
-| `roles.<role>.model`        | —              | `provider/id` for the `executor`, `developer` or `reviewer` role                                    |
-| `roles.<role>.thinking`     | —              | Thinking level of that role                                                                         |
-| `roles.<role>.instructions` | —              | Added to the built-in instructions of the `coordinator`, `executor`, `developer` or `reviewer` role |
-| `roles.developer.maxTurns`  | `100`          | Turns a developer gets                                                                              |
-| `roles.reviewer.maxTurns`   | `40`           | Turns a reviewer gets                                                                               |
-| `env.provider`              | `auto`         | `direnv`, `flake` or `none`; `auto` picks direnv for an `.envrc`, then a flake                      |
-| `env.setup`                 | `[]`           | Commands run once in each new workspace, such as `pnpm install --frozen-lockfile`                   |
-| `globalChecks`              | `[]`           | `{ statement, check }` criteria added to every task                                                 |
+| Field                        | Default        | Description                                                                                         |
+| ---------------------------- | -------------- | --------------------------------------------------------------------------------------------------- |
+| `workspaceRoot`              | `<repo>.tasks` | Where task workspaces go, relative to the repository                                                |
+| `maxExecutors`               | `3`            | Tasks worked at once                                                                                |
+| `defaultBookmark`            | `main`         | Bookmark a task branches from and merges into, unless it names another                              |
+| `roles.<role>.model`         | —              | `provider/id` for the `executor`, `developer` or `reviewer` role                                    |
+| `roles.<role>.thinking`      | —              | Thinking level of that role                                                                         |
+| `roles.<role>.instructions`  | —              | Added to the built-in instructions of the `coordinator`, `executor`, `developer` or `reviewer` role |
+| `roles.coordinator.maxTurns` | `100`          | Turns after which the coordinator is reminded to hand off                                           |
+| `roles.developer.maxTurns`   | `100`          | Turns a developer gets                                                                              |
+| `roles.reviewer.maxTurns`    | `40`           | Turns a reviewer gets                                                                               |
+| `env.provider`               | `auto`         | `direnv`, `flake` or `none`; `auto` picks direnv for an `.envrc`, then a flake                      |
+| `env.setup`                  | `[]`           | Commands run once in each new workspace, such as `pnpm install --frozen-lockfile`                   |
+| `globalChecks`               | `[]`           | `{ statement, check }` criteria added to every task                                                 |
 
 See the [example config](./config/config.example.json) and the [JSON Schema](./schemas/config.schema.json) for every option.
 

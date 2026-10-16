@@ -78,8 +78,8 @@ export function nudgePrompt(state: State, root: Task): string {
     .join('\n')
 }
 
-export function handoffMessage(board: string): string {
-  return `This session takes over coordinating the repository's tasks from a previous one. The task board as it stands:\n\n${board}`
+export function handoffMessage(board: string, previous: string): string {
+  return `This session takes over coordinating the repository's tasks from session ${previous}; read it with session_read only where the board leaves you unsure. The task board as it stands:\n\n${board}`
 }
 
 export function developerPrompt(state: State, task: Task, instructions: string): string {

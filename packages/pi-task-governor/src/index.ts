@@ -26,8 +26,6 @@ import { describeError } from './tooling.js'
 import { registerWorkTools } from './work.js'
 
 const SUBCOMMANDS = ['coordinate', 'pause', 'resume', 'unlock', 'handoff']
-// Past this many compactions a coordinator degrades; a fresh session seeded from the store does better.
-const COMPACTION_HINT = 4
 const DEFAULT_UNLOCK_MINUTES = 30
 const WORDS = /\s+/
 
@@ -171,12 +169,19 @@ export default function taskGovernor(pi: ExtensionAPI): void {
     }
   })
 
-  let compactions = 0
-  pi.on('session_compact', () => {
-    compactions += 1
-    if (runtime?.role === 'coordinator' && compactions === COMPACTION_HINT) {
+  // Counted in turns, since a context manager such as pi-magic-context may keep Pi from ever compacting.
+  let turns = 0
+  let reminded = false
+  pi.on('turn_end', () => {
+    turns += 1
+    if (
+      runtime?.role === 'coordinator' &&
+      !reminded &&
+      turns >= readState(runtime.store).config.roles.coordinator.maxTurns
+    ) {
+      reminded = true
       ui?.notify(
-        `This coordinator session has been compacted ${COMPACTION_HINT} times; /governor handoff continues in a fresh one seeded from the task board.`,
+        `This coordinator session has run ${turns} turns; /governor handoff continues in a fresh one seeded from the task board.`,
         'warning',
       )
     }
@@ -267,10 +272,11 @@ export default function taskGovernor(pi: ExtensionAPI): void {
                 return state
               }),
             )
+            const previous = ctx.sessionManager.getSessionId()
             await ctx.newSession({
               withSession: async next =>
                 next.sendMessage(
-                  { customType: 'pi-task-governor:handoff', content: handoffMessage(board), display: true },
+                  { customType: 'pi-task-governor:handoff', content: handoffMessage(board, previous), display: true },
                   { triggerTurn: false },
                 ),
             })

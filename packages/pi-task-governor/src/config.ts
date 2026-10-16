@@ -19,7 +19,8 @@ const roleSchema = coordinatorSchema.extend({
   thinking: z.enum(THINKING_LEVELS).optional(),
 })
 
-// Only developers and reviewers have a turn budget; an executor runs until its task ends.
+// Only developers and reviewers have a turn budget; an executor runs until its task ends, and past its turns the
+// coordinator is only reminded to hand off.
 const subagentSchema = roleSchema.extend({ maxTurns: z.number().int().min(2).optional() })
 
 const envSchema = z.strictObject({
@@ -39,7 +40,7 @@ const fileSchema = z.strictObject({
   defaultBookmark: z.string().trim().min(1).optional(),
   roles: z
     .strictObject({
-      coordinator: coordinatorSchema.optional(),
+      coordinator: coordinatorSchema.extend({ maxTurns: z.number().int().min(2).optional() }).optional(),
       executor: roleSchema.optional(),
       developer: subagentSchema.optional(),
       reviewer: subagentSchema.optional(),
@@ -54,7 +55,7 @@ const configSchema = fileSchema.extend({
   defaultBookmark: z.string().trim().min(1).default('main'),
   roles: z
     .strictObject({
-      coordinator: coordinatorSchema.prefault({}),
+      coordinator: coordinatorSchema.extend({ maxTurns: z.number().int().min(2).default(100) }).prefault({}),
       executor: roleSchema.prefault({}),
       developer: roleSchema.extend({ maxTurns: z.number().int().min(2).default(100) }).prefault({}),
       reviewer: roleSchema.extend({ maxTurns: z.number().int().min(2).default(40) }).prefault({}),
@@ -89,7 +90,7 @@ export interface GovernorConfig {
   maxExecutors: number
   defaultBookmark: string
   roles: {
-    coordinator: CoordinatorConfig
+    coordinator: CoordinatorConfig & { maxTurns: number }
     executor: RoleConfig
     developer: RoleConfig & { maxTurns: number }
     reviewer: RoleConfig & { maxTurns: number }

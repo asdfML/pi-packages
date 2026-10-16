@@ -33,6 +33,12 @@
             "instructions": {
               "type": "string",
               "minLength": 1
+            },
+            "maxTurns": {
+              "default": 100,
+              "type": "integer",
+              "minimum": 2,
+              "maximum": 9007199254740991
             }
           },
           "additionalProperties": false

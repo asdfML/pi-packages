@@ -85,6 +85,27 @@ describe('governor extension', () => {
     )
   })
 
+  it('reminds the coordinator to hand off once it has run its turns', async () => {
+    const governor = loadGovernor({ cwd: workspace.repo, sessionId: 'boss' })
+    await governor.start()
+    await governor.command('coordinate')
+    updateState(storeDirectory(workspace.repo), state => {
+      state.config.roles.coordinator.maxTurns = 2
+    })
+
+    for (let turn = 0; turn < 3; turn += 1) {
+      await governor.emit('turn_end', {})
+    }
+
+    expect(governor.notices.filter(notice => notice.type === 'warning')).toEqual([
+      {
+        message:
+          'This coordinator session has run 2 turns; /governor handoff continues in a fresh one seeded from the task board.',
+        type: 'warning',
+      },
+    ])
+  })
+
   it('keeps the lease with a live coordinator and hands a dead one to whoever resumes it', async () => {
     const governor = loadGovernor({ cwd: workspace.repo, sessionId: 'boss' })
     await governor.start()
