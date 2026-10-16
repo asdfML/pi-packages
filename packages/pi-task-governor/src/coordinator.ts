@@ -9,7 +9,7 @@ import { loadConfig } from './config.js'
 import { leaseIsFree, requireRole } from './runtime.js'
 import { executorStatus } from './scheduler.js'
 import { findRepoRoot, initStore, readState, storeDirectory, updateState } from './store.js'
-import { cancelTask, renderBrief, renderTree, requireTask } from './task.js'
+import { cancelTask, logEvent, renderBrief, renderTree, requireTask } from './task.js'
 import { nonBlank, textResult } from './tooling.js'
 
 const COORDINATOR_TOOLS: string[] = ['task_declare', 'task_list', 'task_show', 'task_cancel', 'task_answer']
@@ -24,7 +24,7 @@ function describeRun(task: Task): string {
   const status = executorStatus(claim)
 
   return [
-    `executor ${claim.sessionId} ${status}`,
+    claim.sessionId === undefined ? 'preparing its workspace' : `executor ${claim.sessionId} ${status}`,
     ...(status === 'asking' ? [`asks: ${claim.question}`] : []),
     ...(status === 'stalled' ? [`stalled: ${claim.stalled}`] : []),
   ].join(' · ')
@@ -39,6 +39,7 @@ function renderDetails(state: State, task: Task): string {
     renderBrief(state, task),
     '',
     `State: ${task.state}${task.claim === undefined ? '' : ` · ${describeRun(task)} · workspace ${task.claim.workspace.path}`}`,
+    ...(task.note === undefined ? [] : [`Note: ${task.note}`]),
     ...task.reviews.map(
       review =>
         `Review by ${review.reviewer} on ${review.commit}: ${review.verdict}${review.findings === '' ? '' : ` · ${review.findings}`}`,
@@ -104,28 +105,31 @@ export function registerCoordinatorTools(pi: ExtensionAPI, host: Host): void {
       name: 'task_answer',
       label: 'Answer executor',
       description:
-        "Answer the question of a root task's executor, or unblock a stalled one with guidance; its executor restarts with your answer.",
+        "Answer the question of a root task's executor, or unblock a stalled one with guidance; a fresh executor session continues the task with your answer.",
       parameters: Type.Object({ id: nonBlank('Root task id'), answer: nonBlank('Your answer or guidance') }),
       defaultActive: false,
       async execute(_toolCallId, params) {
         const runtime = requireRole(host.runtime(), 'coordinator')
         updateState(runtime.store, state => {
-          const { claim } = requireTask(state, params.id)
+          const task = requireTask(state, params.id)
+          const { claim } = task
           if (claim === undefined || !['asking', 'stalled'].includes(executorStatus(claim))) {
             throw new Error(
               `${params.id} has no executor waiting for an answer; message a running one with session_send.`,
             )
           }
-          if (claim.pid === undefined) {
+          if (claim.sessionId === undefined) {
             throw new Error(`${params.id} stalled before its executor started; cancel it and declare it again.`)
           }
-          claim.answer = params.answer
+          claim.question = undefined
           claim.stalled = undefined
           claim.restarts = 0
+          claim.handoff = true
+          logEvent(task, `answered: ${params.answer}`, Date.now())
         })
         host.changed()
 
-        return textResult(`${params.id} restarts with your answer.`)
+        return textResult(`A fresh executor session continues ${params.id} with your answer.`)
       },
     }),
   )

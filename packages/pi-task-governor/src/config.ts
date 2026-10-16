@@ -10,18 +10,18 @@ const CONFIG_SCHEMA_URL =
 const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
 const ENV_PROVIDERS = ['auto', 'direnv', 'flake', 'none'] as const
 
+// At its limit a coordinator is reminded to hand off, an executor hands off, and a developer or reviewer must finish.
+const turnsSchema = z.number().int().min(2)
+
 const coordinatorSchema = z.strictObject({
   instructions: z.string().trim().min(1).optional(),
+  maxTurns: turnsSchema.optional(),
 })
 
 const roleSchema = coordinatorSchema.extend({
   model: z.string().trim().min(1).optional(),
   thinking: z.enum(THINKING_LEVELS).optional(),
 })
-
-// Only developers and reviewers have a turn budget; an executor runs until its task ends, and past its turns the
-// coordinator is only reminded to hand off.
-const subagentSchema = roleSchema.extend({ maxTurns: z.number().int().min(2).optional() })
 
 const envSchema = z.strictObject({
   provider: z.enum(ENV_PROVIDERS).optional(),
@@ -40,10 +40,10 @@ const fileSchema = z.strictObject({
   defaultBookmark: z.string().trim().min(1).optional(),
   roles: z
     .strictObject({
-      coordinator: coordinatorSchema.extend({ maxTurns: z.number().int().min(2).optional() }).optional(),
+      coordinator: coordinatorSchema.optional(),
       executor: roleSchema.optional(),
-      developer: subagentSchema.optional(),
-      reviewer: subagentSchema.optional(),
+      developer: roleSchema.optional(),
+      reviewer: roleSchema.optional(),
     })
     .optional(),
   env: envSchema.optional(),
@@ -55,10 +55,10 @@ const configSchema = fileSchema.extend({
   defaultBookmark: z.string().trim().min(1).default('main'),
   roles: z
     .strictObject({
-      coordinator: coordinatorSchema.extend({ maxTurns: z.number().int().min(2).default(100) }).prefault({}),
-      executor: roleSchema.prefault({}),
-      developer: roleSchema.extend({ maxTurns: z.number().int().min(2).default(100) }).prefault({}),
-      reviewer: roleSchema.extend({ maxTurns: z.number().int().min(2).default(40) }).prefault({}),
+      coordinator: coordinatorSchema.extend({ maxTurns: turnsSchema.default(100) }).prefault({}),
+      executor: roleSchema.extend({ maxTurns: turnsSchema.default(100) }).prefault({}),
+      developer: roleSchema.extend({ maxTurns: turnsSchema.default(100) }).prefault({}),
+      reviewer: roleSchema.extend({ maxTurns: turnsSchema.default(40) }).prefault({}),
     })
     .prefault({}),
   env: envSchema
@@ -75,6 +75,7 @@ export type EnvProvider = (typeof ENV_PROVIDERS)[number]
 interface CoordinatorConfig {
   /** Added to the role's built-in instructions in its system prompt. */
   instructions?: string | undefined
+  maxTurns: number
 }
 
 interface RoleConfig extends CoordinatorConfig {
@@ -90,10 +91,10 @@ export interface GovernorConfig {
   maxExecutors: number
   defaultBookmark: string
   roles: {
-    coordinator: CoordinatorConfig & { maxTurns: number }
+    coordinator: CoordinatorConfig
     executor: RoleConfig
-    developer: RoleConfig & { maxTurns: number }
-    reviewer: RoleConfig & { maxTurns: number }
+    developer: RoleConfig
+    reviewer: RoleConfig
   }
   env: { provider: EnvProvider; setup: string[] }
   globalChecks: { statement: string; check: string }[]

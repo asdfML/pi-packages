@@ -1,5 +1,5 @@
 import type { Mail } from '@mzwing/pi-session-hub/api'
-import { readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
 import { describe, expect, it, vi } from 'vitest'
@@ -53,15 +53,17 @@ describe('executor session', () => {
     return loadGovernor({ cwd: workspace.root, sessionId: 'executor-1', mode: 'print', store })
   }
 
-  /** What the governor's settle hooks return, ignoring the ones with nothing to say. */
-  async function settle(session: ReturnType<typeof executor>, outcome: string): Promise<unknown> {
-    return (await session.emit('agent_before_settle', { outcome })).find(result => result !== undefined)
+  /** What the governor's handlers of `name` return, ignoring the ones with nothing to say. */
+  async function boundary(session: ReturnType<typeof executor>, name: string, event: object): Promise<unknown> {
+    return (await session.emit(name, event)).find(result => result !== undefined)
   }
 
   function mailToCoordinator(): Mail[] {
     const directory = join(workspace.agent, 'pi-session-hub', 'mail', 'boss')
 
-    return readdirSync(directory).map(name => JSON.parse(readFileSync(join(directory, name), 'utf8')) as Mail)
+    return existsSync(directory)
+      ? readdirSync(directory).map(name => JSON.parse(readFileSync(join(directory, name), 'utf8')) as Mail)
+      : []
   }
 
   it('gives a session started from another pid no role and runs none of its prompts', async () => {
@@ -89,10 +91,11 @@ describe('executor session', () => {
       /^You are the executor of one task in a governed jj repository\.[\s\S]*\nKeep every developer run to one file\.$/,
     )
     expect(readState(store).tasks['T1']?.claim?.question).toBe('Which API version?')
+    expect(readState(store).tasks['T1']?.log.at(-1)?.event).toBe('asked: Which API version?')
     const [mail] = mailToCoordinator()
     expect(mail).toMatchObject({ from: 'executor-1', fromName: 'T1 executor', wake: true })
     expect(mail?.body).toContain('Which API version?')
-    expect(await settle(session, 'completed')).toBeUndefined()
+    expect(await boundary(session, 'agent_before_settle', { outcome: 'completed' })).toBeUndefined()
   })
 
   it('keeps its role in a system prompt another extension forced', async () => {
@@ -110,23 +113,92 @@ describe('executor session', () => {
     )
   })
 
-  it('sends an unfinished run back to work a few times, then stalls the task', async () => {
+  it('sends an unfinished run back to work a few times, then lets it end for a fresh session to take over', async () => {
     const store = claimed(process.pid)
     const session = executor(store)
     await session.start()
 
-    expect(await settle(session, 'error')).toBeUndefined()
+    expect(await boundary(session, 'agent_before_settle', { outcome: 'error' })).toBeUndefined()
     for (let nudge = 0; nudge < 3; nudge += 1) {
-      const result = (await settle(session, 'completed')) as { continue: boolean; entries: { content: string }[] }
+      const result = (await boundary(session, 'agent_before_settle', { outcome: 'completed' })) as {
+        continue: boolean
+        entries: { content: string }[]
+      }
       expect(result.continue).toBe(true)
       expect(result.entries[0]?.content).toContain('T1 is still claimed')
+      expect(result.entries[0]?.content).toContain('task_handoff')
     }
-    expect(await settle(session, 'completed')).toBeUndefined()
+    expect(await boundary(session, 'agent_before_settle', { outcome: 'completed' })).toBeUndefined()
 
-    expect(readState(store).tasks['T1']?.claim?.stalled).toContain('tried to stop 4 times')
-    const [mail] = mailToCoordinator()
-    expect(mail?.wake).toBe(true)
-    expect(mail?.body).toContain('T1 stalled')
+    expect(readState(store).tasks['T1']?.claim?.stalled).toBeUndefined()
+    expect(mailToCoordinator()).toEqual([])
+  })
+
+  it('keeps a note on its current task, and hands the task off only once it has worked on it', async () => {
+    const store = claimed(process.pid)
+    const session = executor(store)
+    await session.start()
+
+    await session.tool('task_note', { note: 'Tokenizer done; tests remain.' })
+    expect(readState(store).tasks['T1']?.note).toBe('Tokenizer done; tests remain.')
+    await expect(session.tool('task_handoff', { note: 'Nothing yet.' })).rejects.toThrow('only after working')
+    await session.emit('tool_execution_end', { toolName: 'task_develop', isError: false })
+    await session.tool('task_handoff', { note: 'Tokenizer done; parser tests remain.' })
+
+    expect(readState(store).tasks['T1']).toMatchObject({
+      note: 'Tokenizer done; parser tests remain.',
+      claim: { handoff: true },
+    })
+    expect(readState(store).tasks['T1']?.log.at(-1)?.event).toBe('executor session executor-1 handed off by choice')
+    expect(await boundary(session, 'agent_before_settle', { outcome: 'completed' })).toBeUndefined()
+  })
+
+  it('is told to hand off near its turn limit, and hands off by itself at it', async () => {
+    const store = claimed(process.pid)
+    updateState(store, state => {
+      state.config.roles.executor.maxTurns = 4
+    })
+    const session = executor(store)
+    await session.start()
+    await session.emit('tool_execution_end', { toolName: 'task_review', isError: false })
+
+    const results: unknown[] = []
+    // One past the limit, as the aborted run's last turn ends.
+    for (let turn = 0; turn < 5; turn += 1) {
+      results.push(await boundary(session, 'turn_end', {}))
+    }
+
+    expect(results).toEqual([
+      undefined,
+      { entries: [expect.objectContaining({ customType: 'pi-task-governor:nudge' })] },
+      undefined,
+      undefined,
+      undefined,
+    ])
+    expect(session.abort).toHaveBeenCalledOnce()
+    expect(readState(store).tasks['T1']?.claim?.handoff).toBe(true)
+    expect(readState(store).tasks['T1']?.log.filter(entry => entry.event.includes('handed off'))).toMatchObject([
+      { event: 'executor session executor-1 handed off after 4 turns' },
+    ])
+  })
+
+  it('hands nothing more off once it has asked the coordinator, and only stops at its limit', async () => {
+    const store = claimed(process.pid)
+    updateState(store, state => {
+      state.config.roles.executor.maxTurns = 4
+      state.tasks['T1']!.claim!.question = 'Which API version?'
+    })
+    const session = executor(store)
+    await session.start()
+    await session.emit('tool_execution_end', { toolName: 'task_review', isError: false })
+
+    await expect(session.tool('task_handoff', { note: 'Done.' })).rejects.toThrow('Nothing is left to hand off')
+    for (let turn = 0; turn < 4; turn += 1) {
+      expect(await boundary(session, 'turn_end', {})).toBeUndefined()
+    }
+
+    expect(session.abort).toHaveBeenCalledOnce()
+    expect(readState(store).tasks['T1']?.claim?.handoff).toBeUndefined()
   })
 
   it('sends its task back to work when a review breaks off', async () => {
@@ -189,12 +261,14 @@ describe('executor session', () => {
     expect(process.env['PI_SUBAGENT_PARENT_SESSION']).toBe('boss-2')
   })
 
-  it('tells the coordinator when it exits', async () => {
-    const session = executor(claimed(process.pid))
+  it('leaves its claim and tells the coordinator when it exits', async () => {
+    const store = claimed(process.pid)
+    const session = executor(store)
     await session.start()
 
     await session.emit('session_shutdown', { reason: 'quit' })
 
+    expect(readState(store).tasks['T1']?.claim?.pid).toBeUndefined()
     expect(mailToCoordinator()).toMatchObject([{ wake: false, body: 'T1 executor exited; the task is claimed.' }])
   })
 })

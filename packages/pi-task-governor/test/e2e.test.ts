@@ -29,20 +29,15 @@ describe('governed task end to end', () => {
     }
   })
 
-  it('takes a declared task through development, review and merge, then cleans its workspace up', async () => {
+  it('takes a declared task through development, a handoff, review and merge, then cleans its workspace up', async () => {
     writeJson(join(workspace.agent, 'settings.json'), {
       extensions: [join(HUB, 'dist', 'index.js'), join(GOVERNOR, 'dist', 'index.js'), FAUX_MODEL],
     })
     const store = storeDirectory(workspace.repo)
-    const faux = { model: 'faux/faux-1' }
+    const faux = { model: 'faux/faux-1', maxTurns: 10 }
     initStore(store, {
       ...DEFAULT_CONFIG,
-      roles: {
-        ...DEFAULT_CONFIG.roles,
-        executor: faux,
-        developer: { ...faux, maxTurns: 10 },
-        reviewer: { ...faux, maxTurns: 10 },
-      },
+      roles: { ...DEFAULT_CONFIG.roles, executor: faux, developer: faux, reviewer: faux },
     })
     updateState(store, state => {
       state.lease = { sessionId: 'boss', pid: process.pid }
@@ -79,6 +74,11 @@ describe('governed task end to end', () => {
       },
     ])
     expect(task.signedBy).not.toBe(task.claim?.sessionId)
+    expect(task.note).toBe('a.txt is written; it needs its review.')
+    expect(task.log.map(entry => entry.event.replace(/session \S+/, 'session X'))).toEqual(
+      expect.arrayContaining(['executor session X started', 'executor session X handed off by choice']),
+    )
+    expect(task.log.filter(entry => entry.event.endsWith(' started'))).toHaveLength(2)
     await vi.waitFor(() => expect(existsSync(task.claim!.workspace.path)).toBe(false), { timeout: 60_000 })
     expect(existsSync(`${task.claim!.workspace.path}.tmp`)).toBe(false)
     expect(readFileSync(join(workspace.repo, 'shared.txt'), 'utf8')).toBe('line1\nline2\nline3\n')

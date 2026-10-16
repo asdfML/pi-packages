@@ -70,7 +70,7 @@ describe('governor extension', () => {
         state,
         'T1',
         {
-          sessionId: 'executor-1',
+          sessionId: undefined,
           pid: undefined,
           workspace: { name: 'task-T1', path: workspace.root },
           restarts: 0,

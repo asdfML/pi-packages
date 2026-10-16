@@ -1,4 +1,4 @@
-import type { Claim, State, Task } from './task.js'
+import type { Claim, Task } from './task.js'
 import type { Host } from './tooling.js'
 import { randomUUID } from 'node:crypto'
 import { existsSync, rmSync } from 'node:fs'
@@ -12,9 +12,9 @@ import {
   saveEnvironment,
   temporaryDirectory,
 } from './env.js'
-import { executorResumePrompt, executorStartPrompt } from './prompts.js'
+import { executorPrompt } from './prompts.js'
 import { readState, updateState } from './store.js'
-import { claimRoot, focusOf, isOpen, reopen, requireTask } from './task.js'
+import { claimRoot, focusOf, isOpen, logEvent, reopen, requireTask } from './task.js'
 import { describeError } from './tooling.js'
 import { addWorkspace, bookmarkCommit, removeWorkspace } from './vcs.js'
 
@@ -28,11 +28,14 @@ const EXECUTOR_TOOLS: string[] = [
   'task_subtask',
   'task_develop',
   'task_review',
+  'task_note',
   'task_ask',
+  'task_handoff',
+  'session_read',
 ]
 const MAX_RESTARTS = 2
 
-export type ExecutorStatus = 'preparing' | 'running' | 'asking' | 'answered' | 'stalled' | 'stopped'
+export type ExecutorStatus = 'preparing' | 'running' | 'asking' | 'handed-off' | 'stalled' | 'stopped'
 
 export interface Scheduler {
   /** Brings executors in line with the store; calls during a pass fold into one more pass. */
@@ -43,17 +46,17 @@ export function executorStatus(claim: Claim): ExecutorStatus {
   if (claim.stalled !== undefined) {
     return 'stalled'
   }
-  if (claim.pid === undefined) {
+  if (claim.sessionId === undefined) {
     return 'preparing'
   }
-  if (isAlive(claim.pid)) {
+  if (claim.pid !== undefined && isAlive(claim.pid)) {
     return 'running'
   }
-  if (claim.answer !== undefined) {
-    return 'answered'
+  if (claim.question !== undefined) {
+    return 'asking'
   }
 
-  return claim.question === undefined ? 'stopped' : 'asking'
+  return claim.handoff === true ? 'handed-off' : 'stopped'
 }
 
 function sequence(task: Task): number {
@@ -62,8 +65,8 @@ function sequence(task: Task): number {
 
 /**
  * Runs in the coordinator, woken by events only: declarations, answers, executor exits and executor mail. It
- * launches executors for queued root tasks within the budget, restarts executors that stopped before their task
- * ended, and removes the workspaces of finished tasks.
+ * launches executors for queued root tasks within the budget, gives a task a fresh executor session whenever the
+ * last one ended before the task did, and removes the workspaces of finished tasks.
  */
 export function createScheduler(host: Host, notify: (message: string, wake: boolean) => void): Scheduler {
   let pass: Promise<void> | undefined
@@ -76,8 +79,11 @@ export function createScheduler(host: Host, notify: (message: string, wake: bool
     notify(`${taskId} stalled: ${reason}`, true)
   }
 
-  /** Spawning inside the lock means the executor, which checks its pid under the same lock, sees it bound. */
-  function launch(store: string, taskId: string, prompt: (state: State, task: Task) => string): void {
+  /**
+   * Starts a fresh executor session, which takes over from the last one if any. Spawning inside the lock means the
+   * executor, which checks its pid under the same lock, sees it bound.
+   */
+  function launch(store: string, taskId: string): void {
     updateState(store, state => {
       const task = requireTask(state, taskId)
       // Cancelled while its workspace was being prepared.
@@ -85,11 +91,13 @@ export function createScheduler(host: Host, notify: (message: string, wake: bool
         return
       }
       const claim = task.claim!
+      const prompt = executorPrompt(state, task, claim.sessionId)
+      claim.sessionId = randomUUID()
       const { model, thinking } = state.config.roles.executor
       const child = spawnSession({
         cwd: claim.workspace.path,
         sessionId: claim.sessionId,
-        prompt: prompt(state, task),
+        prompt,
         name: `${task.id} executor: ${task.title}`,
         model,
         thinking,
@@ -109,8 +117,8 @@ export function createScheduler(host: Host, notify: (message: string, wake: bool
       child.on('exit', tick)
       child.unref()
       claim.pid = child.pid
-      claim.question = undefined
-      claim.answer = undefined
+      claim.handoff = undefined
+      logEvent(task, `executor session ${claim.sessionId} started`, Date.now())
     })
   }
 
@@ -122,7 +130,7 @@ export function createScheduler(host: Host, notify: (message: string, wake: bool
       const task = claimRoot(
         state,
         taskId,
-        { sessionId: randomUUID(), pid: undefined, workspace, restarts: 0 },
+        { sessionId: undefined, pid: undefined, workspace, restarts: 0 },
         Date.now(),
       )
 
@@ -140,10 +148,11 @@ export function createScheduler(host: Host, notify: (message: string, wake: bool
 
       return
     }
-    launch(store, taskId, executorStartPrompt)
+    launch(store, taskId)
   }
 
-  function restart(store: string, task: Task, status: 'stopped' | 'answered'): void {
+  /** A stop before the task ended counts against the restarts; a handoff, the coordinator's answer included, does not. */
+  function relaunch(store: string, task: Task, status: ExecutorStatus): void {
     if (status === 'stopped' && task.claim!.restarts === MAX_RESTARTS) {
       stall(store, task.id, `its executor stopped ${MAX_RESTARTS + 1} times before the task ended`)
 
@@ -157,7 +166,7 @@ export function createScheduler(host: Host, notify: (message: string, wake: bool
       // A review the stopped executor was running died with it.
       reopen(state, focusOf(state, root).id, 'its executor stopped during the review', Date.now())
     })
-    launch(store, task.id, (_state, current) => executorResumePrompt(current, current.claim!.answer))
+    launch(store, task.id)
   }
 
   async function cleanUp(store: string, repoRoot: string, task: Task): Promise<void> {
@@ -196,8 +205,8 @@ export function createScheduler(host: Host, notify: (message: string, wake: bool
     }
     for (const task of roots) {
       const status = task.claim === undefined || !isOpen(task) ? undefined : executorStatus(task.claim)
-      if (status === 'stopped' || status === 'answered') {
-        restart(store, task, status)
+      if (status === 'stopped' || status === 'handed-off') {
+        relaunch(store, task, status)
       }
     }
     const busy = Object.values(readState(store).tasks).filter(

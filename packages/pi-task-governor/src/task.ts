@@ -49,15 +49,20 @@ export interface Review {
 
 /** Held by root tasks only; a subtask is worked by its root's executor in the root's workspace. */
 export interface Claim {
-  sessionId: string
-  /** Of the executor process now running; a session presenting the id from another pid is not the claimer. */
+  /** Of the executor session working the task, or of the last one; undefined until the first starts. */
+  sessionId: string | undefined
+  /** Of the executor process while it runs; a session presenting the id from another pid is not the claimer. */
   pid: number | undefined
   workspace: { name: string; path: string }
   /** Restarts after the executor stopped without finishing. */
   restarts: number
   question?: string | undefined
-  answer?: string | undefined
   stalled?: string | undefined
+  /**
+   * A fresh executor session takes over without counting as a restart: the last one handed off, or the coordinator
+   * answered it. The task's log tells the new session which.
+   */
+  handoff?: boolean | undefined
 }
 
 export interface Task {
@@ -73,6 +78,8 @@ export interface Task {
   state: TaskState
   declaredBy: string
   claim?: Claim | undefined
+  /** What the executor carries to whoever works the task next. */
+  note?: string | undefined
   reviews: Review[]
   signedBy?: string | undefined
   signedCommit?: string | undefined
@@ -100,7 +107,7 @@ export function isOpen(task: Task): boolean {
   return task.state !== 'done' && task.state !== 'cancelled'
 }
 
-function note(task: Task, event: string, now: number): void {
+export function logEvent(task: Task, event: string, now: number): void {
   task.log.push({ at: now, event })
 }
 
@@ -128,11 +135,15 @@ function claimOf(state: State, task: Task): Claim | undefined {
   return task.parentId === undefined ? task.claim : claimOf(state, requireTask(state, task.parentId))
 }
 
-/** The deepest open task of a root's tree; depth-first work always happens there. */
-export function focusOf(state: State, root: Task): Task {
+/** The open tasks from a root down to the deepest one, where depth-first work always happens. */
+export function focusChain(state: State, root: Task): Task[] {
   const child = childrenOf(state, root.id).find(isOpen)
 
-  return child === undefined ? root : focusOf(state, child)
+  return child === undefined ? [root] : [root, ...focusChain(state, child)]
+}
+
+export function focusOf(state: State, root: Task): Task {
+  return focusChain(state, root).at(-1)!
 }
 
 function buildSpec(input: SpecInput, globalChecks: GovernorConfig['globalChecks']): Spec {
@@ -160,7 +171,7 @@ export function declareRoot(state: State, input: SpecInput, bookmark: string, by
     reviews: [],
     log: [],
   }
-  note(task, `declared by ${by}, to merge into ${bookmark}`, now)
+  logEvent(task, `declared by ${by}, to merge into ${bookmark}`, now)
   state.tasks[task.id] = task
 
   return task
@@ -190,7 +201,7 @@ export function declareChild(
     reviews: [],
     log: [],
   }
-  note(task, `declared by ${by} under ${parentId}, based on ${baseCommit}`, now)
+  logEvent(task, `declared by ${by} under ${parentId}, based on ${baseCommit}`, now)
   state.tasks[task.id] = task
 
   return task
@@ -203,7 +214,7 @@ export function claimRoot(state: State, id: string, claim: Claim, now: number): 
   }
   task.state = 'claimed'
   task.claim = claim
-  note(task, `claimed by ${claim.sessionId}`, now)
+  logEvent(task, 'claimed', now)
 
   return task
 }
@@ -218,7 +229,7 @@ export function beginReview(state: State, id: string, by: string, commit: string
     throw new Error(`${id} still has open subtasks: ${open.map(child => child.id).join(', ')}.`)
   }
   task.state = 'reviewing'
-  note(task, `review started on ${commit}`, now)
+  logEvent(task, `review started on ${commit}`, now)
 
   return task
 }
@@ -258,13 +269,13 @@ export function recordVerdict(state: State, id: string, review: Review): Task {
   task.reviews.push(review)
   if (review.verdict === 'fail') {
     task.state = 'claimed'
-    note(task, `rejected by ${review.reviewer}: ${review.findings}`, review.at)
+    logEvent(task, `rejected by ${review.reviewer}: ${review.findings}`, review.at)
 
     return task
   }
   task.signedBy = review.reviewer
   task.signedCommit = review.commit
-  note(task, `signed off by ${review.reviewer} on ${review.commit}`, review.at)
+  logEvent(task, `signed off by ${review.reviewer} on ${review.commit}`, review.at)
   if (task.parentId !== undefined) {
     task.state = 'done'
   }
@@ -276,7 +287,7 @@ export function completeMerge(state: State, id: string, commit: string, now: num
   const task = requireTask(state, id)
   task.state = 'done'
   task.merged = commit
-  note(task, `merged into ${task.base.bookmark} as ${commit}`, now)
+  logEvent(task, `merged into ${task.base.bookmark} as ${commit}`, now)
 
   return task
 }
@@ -293,7 +304,7 @@ export function reopen(state: State, id: string, reason: string, now: number, on
     task.signedBy = undefined
     task.signedCommit = undefined
     task.base.commit = onto ?? task.base.commit
-    note(task, `reopened: ${reason}`, now)
+    logEvent(task, `reopened: ${reason}`, now)
   }
 
   return task
@@ -305,7 +316,7 @@ export function cancelTask(state: State, id: string, by: string, reason: string,
     throw new Error(`${id} is already ${task.state}.`)
   }
   task.state = 'cancelled'
-  note(task, `cancelled by ${by}: ${reason}`, now)
+  logEvent(task, `cancelled by ${by}: ${reason}`, now)
 
   return [
     task,

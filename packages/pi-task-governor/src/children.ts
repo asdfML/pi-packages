@@ -17,7 +17,7 @@ import { readState } from './store.js'
 import { requireTask } from './task.js'
 
 const BINDINGS = Symbol.for('pi-task-governor:children')
-const WRAP_UP_TURNS = 2
+export const WRAP_UP_TURNS = 2
 
 const DEVELOPER_TOOLS: string[] = ['read', 'grep', 'find', 'ls', 'edit', 'write', 'bash']
 const REVIEWER_TOOLS: string[] = ['read', 'grep', 'find', 'ls', 'task_diff', 'task_check', 'task_verdict']

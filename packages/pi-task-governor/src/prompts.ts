@@ -1,7 +1,10 @@
 import type { GovernorConfig } from './config.js'
 import type { Role } from './runtime.js'
 import type { State, Task } from './task.js'
-import { focusOf, renderBrief, requireTask } from './task.js'
+import { focusChain, focusOf, renderBrief, requireTask } from './task.js'
+
+// Enough history for a session taking over to see why the task came back to it; task_show has the rest.
+const RECENT_EVENTS = 6
 
 const ROLE_SECTIONS: Record<Role, string> = {
   coordinator: [
@@ -20,15 +23,18 @@ const ROLE_SECTIONS: Record<Role, string> = {
   executor: [
     'You are the executor of one task in a governed jj repository. You run headless in the task workspace: nobody reads your output, so you act only through your tools and reach the coordinator only through task_ask.',
     'You orchestrate and never edit code yourself:',
-    "- task_show shows a task's brief, state, reviews and history. Start with it, and again after a restart.",
+    "- task_show shows a task's brief, state, note, reviews and history. Start with it.",
     '- task_develop has a developer session work on the current task, following your instructions; the controller commits what it changes and returns its report with the diffstat. Give concrete instructions: the approach, what to do in this run, and after a failed review the findings to fix.',
     '- task_review has a fresh reviewer session judge the current task against every acceptance criterion. A pass finishes a subtask, or merges a root task into its bookmark; a failure returns findings for your next task_develop.',
     '- task_subtask opens a subtask for a separate problem that must be solved first. Work it until it is signed off, then return to its parent, whose review waits for all its subtasks.',
-    '- task_ask asks the coordinator about a decision the brief leaves open, or a blocker you cannot resolve. End your turn right after asking; you are restarted with the answer.',
+    '- task_note keeps a note on the current task for whoever works it next: what is done, what remains, and the decisions taken with their reasons. Update it after each develop or review round; each note replaces the last.',
+    '- task_ask asks the coordinator about a decision the brief leaves open, or a blocker you cannot resolve. End your turn right after asking; a fresh session continues with the answer.',
+    '- task_handoff ends this session and hands the task to a fresh executor session, which starts from the task board and the notes. Hand off when this session has grown long or muddled rather than cutting corners; it also hands off by itself after a set number of turns.',
+    '- session_read reads an earlier executor session of this task, where the board and the notes leave something unclear.',
     'Keep the work inside the brief: scope and boundary fence it in, every non-goal is a stop sign, and nothing the brief does not ask for gets done.',
     'When merging into the bookmark conflicts or breaks a check, the task comes back to you with the merged state in the workspace, conflict markers included, and from then on its change is measured against that state. Have the developer resolve it, then review again.',
     "Permission requests in this task go to the coordinator's session, where the user's reviewer or the user decides. A denial answers that one request and is no ban: change the approach, and if the work cannot go on without it, use task_ask to say exactly what was denied and why it is needed. Never conclude that permissions are off for good.",
-    'You are done when the task is merged or cancelled. Do not stop earlier: a run that stops early is sent back to work, and after a few times the task is reported as stalled.',
+    'You are done when the task is merged or cancelled. Do not stop earlier: a run that stops early is sent back to work, and after a few times a fresh session replaces it.',
   ].join('\n'),
   developer: [
     'You are the developer of one task in a governed jj repository, working in the task workspace.',
@@ -55,14 +61,29 @@ export function roleSection(role: Role, config: GovernorConfig): string {
     : `${ROLE_SECTIONS[role]}\nInstructions for this role from the governor config:\n${added}`
 }
 
-export function executorStartPrompt(state: State, task: Task): string {
-  return `Work on this task as its executor.\n\n${renderBrief(state, task)}`
-}
+/**
+ * What starts an executor session. A session taking over gets where the work stands from the store, never a summary
+ * its predecessor wrote, apart from the notes kept on the open tasks.
+ */
+export function executorPrompt(state: State, root: Task, predecessor: string | undefined): string {
+  if (predecessor === undefined) {
+    return `Work on this task as its executor.\n\n${renderBrief(state, root)}`
+  }
+  const chain = focusChain(state, root)
+  const focus = chain.at(-1)!
+  const events = chain
+    .flatMap(task => task.log.map(entry => ({ ...entry, task: task.id })))
+    .sort((left, right) => left.at - right.at)
+    .slice(-RECENT_EVENTS)
 
-export function executorResumePrompt(task: Task, answer: string | undefined): string {
-  return answer === undefined
-    ? `Your executor process was restarted; the workspace and everything committed in it are intact. See where ${task.id} stands with task_show ${task.id}, then continue.`
-    : `The coordinator answered your question:\n\n${answer}\n\nContinue ${task.id}.`
+  return [
+    `Continue this task as its executor, taking over from session ${predecessor}. The workspace and everything committed in it are intact; read that session with session_read only where the board and the notes below leave you unsure.`,
+    renderBrief(state, root),
+    ...(focus === root ? [] : [`The work is inside its subtask:\n${renderBrief(state, focus)}`]),
+    ...chain.flatMap(task => (task.note === undefined ? [] : [`Note on ${task.id}:\n${task.note}`])),
+    `Latest events:\n${events.map(event => `- ${event.task} ${event.event}`).join('\n')}`,
+    `Start with task_show ${focus.id}.`,
+  ].join('\n\n')
 }
 
 export function nudgePrompt(state: State, root: Task): string {
@@ -73,10 +94,14 @@ export function nudgePrompt(state: State, root: Task): string {
     `${focus.id} is still ${focus.state}; your run would end here, but the task is not finished.`,
     focus.id === root.id ? '' : `It is a subtask of ${root.id}; finish it before returning to its parent.`,
     lastReview?.verdict === 'fail' ? `Its last review failed: ${lastReview.findings}` : '',
-    'Continue with task_develop or task_review, or ask the coordinator with task_ask if something blocks you.',
+    'Continue with task_develop or task_review, or ask the coordinator with task_ask if something blocks you. If this session has grown too long to work well, hand the task off with task_handoff instead of stopping.',
   ]
     .filter(line => line !== '')
     .join('\n')
+}
+
+export function handoffDuePrompt(turnsLeft: number): string {
+  return `This session has ${turnsLeft} turns left before a fresh one takes over. Hand off now with task_handoff and an up-to-date note on what is done and what remains.`
 }
 
 export function handoffMessage(board: string, previous: string): string {

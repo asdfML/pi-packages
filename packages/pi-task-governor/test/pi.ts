@@ -1,4 +1,6 @@
 import type { AgentToolResult, ExtensionAPI, ToolDefinition } from '@earendil-works/pi-coding-agent'
+import type { Mock } from 'vitest'
+import { vi } from 'vitest'
 import taskGovernor from '../src/index.js'
 
 type Handler = (event: unknown, context: unknown) => unknown
@@ -18,6 +20,7 @@ export interface Governor {
   notices: { message: string; type: string }[]
   statuses: (string | undefined)[]
   sent: { message: { content: string }; options: unknown }[]
+  abort: Mock<() => void>
   tools: Map<string, ToolDefinition>
   active: () => string[]
   emit: (name: string, event?: unknown) => Promise<unknown[]>
@@ -36,9 +39,11 @@ export function loadGovernor(options: SessionOptions): Governor {
   const notices: { message: string; type: string }[] = []
   const statuses: (string | undefined)[] = []
   const sent: { message: { content: string }; options: unknown }[] = []
+  const abort = vi.fn<() => void>()
   const context = {
     cwd: options.cwd,
     mode: options.mode ?? 'tui',
+    abort,
     ui: {
       notify: (message: string, type: string) => notices.push({ message, type }),
       setStatus: (_key: string, text: string | undefined) => statuses.push(text),
@@ -80,6 +85,7 @@ export function loadGovernor(options: SessionOptions): Governor {
     notices,
     statuses,
     sent,
+    abort,
     tools,
     active: () => active,
     emit,

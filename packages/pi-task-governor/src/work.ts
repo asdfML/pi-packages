@@ -12,7 +12,7 @@ import { tellCoordinator } from './executor.js'
 import { developerPrompt, returnToParentPrompt, reviewerPrompt } from './prompts.js'
 import { requireRole } from './runtime.js'
 import { readState, updateState } from './store.js'
-import { beginReview, claimedRoot, completeMerge, focusOf, reopen, requireTask } from './task.js'
+import { beginReview, claimedRoot, completeMerge, focusOf, logEvent, reopen, requireTask } from './task.js'
 import { nonBlank, textResult } from './tooling.js'
 import { commitWorkingCopy, diff, headOf, mergeInto } from './vcs.js'
 
@@ -94,6 +94,7 @@ export function registerWorkTools(pi: ExtensionAPI, host: Host): void {
           commit: focus.base.commit!,
           checks: {},
         }
+        const before = await headOf(runtime.repoRoot, workspace)
         const report = await runChild(
           ctx,
           { binding, model, thinking, maxTurns, prompt: developerPrompt(state, focus, params.instructions) },
@@ -101,7 +102,16 @@ export function registerWorkTools(pi: ExtensionAPI, host: Host): void {
         )
         lastReport = report
         const changed = await commitWorkingCopy(workspace, `${focus.id}: ${focus.title}\n\n${report}`)
-        const stat = await diff(runtime.repoRoot, focus.base.commit!, await headOf(runtime.repoRoot, workspace), true)
+        const head = await headOf(runtime.repoRoot, workspace)
+        const run = changed ? (await diff(runtime.repoRoot, before, head, true)).trim().split('\n').at(-1) : undefined
+        updateState(runtime.store, current =>
+          logEvent(
+            requireTask(current, focus.id),
+            run === undefined ? 'developer run changed nothing' : `developer run: ${run}`,
+            Date.now(),
+          ),
+        )
+        const stat = await diff(runtime.repoRoot, focus.base.commit!, head, true)
 
         return textResult(
           [

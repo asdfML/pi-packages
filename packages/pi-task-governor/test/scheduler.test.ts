@@ -8,7 +8,7 @@ import { DEFAULT_CONFIG } from '../src/config.js'
 import { environmentPath } from '../src/env.js'
 import { createScheduler } from '../src/scheduler.js'
 import { initStore, readState, storeDirectory, updateState } from '../src/store.js'
-import { beginReview, cancelTask, claimRoot, declareRoot } from '../src/task.js'
+import { beginReview, cancelTask, claimRoot, declareRoot, logEvent } from '../src/task.js'
 import { DEAD_PID, PARSER_SPEC, useWorkspace } from './helpers.js'
 import { jj } from './jj.js'
 
@@ -57,6 +57,10 @@ describe('scheduler', () => {
     return { store, scheduler, notify }
   }
 
+  function launches() {
+    return vi.mocked(spawnSession).mock.calls.map(([options]) => options)
+  }
+
   it('starts queued root tasks within the budget, each in a workspace of its own', async () => {
     const { store, scheduler } = setUp({ maxExecutors: 1 }, 2)
 
@@ -73,19 +77,19 @@ describe('scheduler', () => {
       jj(workspace.repo, 'log', '--no-graph', '-r', 'main', '-T', 'commit_id'),
     )
     expect(spawnSession).toHaveBeenCalledOnce()
-    const launched = vi.mocked(spawnSession).mock.calls[0]![0]
+    const [launched] = launches()
     expect(launched).toMatchObject({
       cwd: claim.workspace.path,
       sessionId: claim.sessionId,
       args: ['--no-approve', '--no-mcp', '--governor-store', store],
       env: { TMPDIR: `${claim.workspace.path}.tmp` },
     })
-    expect(launched.prompt).toContain('T1: Fix the parser')
+    expect(launched?.prompt).toContain('T1: Fix the parser')
     // Executors orchestrate; only their developers change code.
-    expect(launched.tools?.filter(tool => ['bash', 'edit', 'write'].includes(tool))).toEqual([])
+    expect(launched?.tools?.filter(tool => ['bash', 'edit', 'write'].includes(tool))).toEqual([])
   })
 
-  it('restarts an executor that exits early, until the task stalls', async () => {
+  it('relaunches an executor that exits early in a fresh session each time, until the task stalls', async () => {
     const { store, scheduler, notify } = setUp()
     nextPid = DEAD_PID
 
@@ -97,41 +101,44 @@ describe('scheduler', () => {
 
     await vi.waitFor(() => expect(readState(store).tasks['T1']?.claim?.stalled).toContain('stopped 3 times'))
     expect(readState(store).tasks['T1']?.claim?.restarts).toBe(2)
-    expect(spawnSession).toHaveBeenCalledTimes(3)
-    expect(vi.mocked(spawnSession).mock.calls[1]?.[0].prompt).toContain('was restarted')
+    expect(new Set(launches().map(options => options.sessionId)).size).toBe(3)
+    expect(launches()[1]?.prompt).toContain(`taking over from session ${launches()[0]?.sessionId}`)
     expect(notify).toHaveBeenCalledWith(expect.stringContaining('T1 stalled'), true)
   })
 
-  it("restarts an asking executor with the coordinator's answer", async () => {
+  it("hands a task over to a fresh session that sees the coordinator's answer, counting no restart", async () => {
     const { store, scheduler } = setUp()
     updateState(store, state => {
-      claimRoot(
+      // With no restarts left, so starting at all shows that a handoff counts none.
+      const task = claimRoot(
         state,
         'T1',
         {
           sessionId: 'executor-1',
-          pid: DEAD_PID,
+          pid: undefined,
           workspace: { name: 'task-T1', path: workspace.root },
-          restarts: 0,
-          question: 'Which API version?',
-          answer: 'Use v2',
+          restarts: 2,
+          handoff: true,
         },
         2,
       )
+      logEvent(task, 'asked: Which API version?', 3)
+      logEvent(task, 'answered: Use v2', 4)
     })
 
     scheduler.tick()
     await vi.waitFor(() => expect(spawnSession).toHaveBeenCalledOnce())
 
-    const relaunched = vi.mocked(spawnSession).mock.calls[0]![0]
-    expect(relaunched.sessionId).toBe('executor-1')
-    expect(relaunched.prompt).toContain('Use v2')
+    const [relaunched] = launches()
+    expect(relaunched?.sessionId).not.toBe('executor-1')
+    expect(relaunched?.prompt).toContain('taking over from session executor-1')
+    expect(relaunched?.prompt).toContain('- T1 asked: Which API version?\n- T1 answered: Use v2')
     const claim = readState(store).tasks['T1']?.claim
-    expect(claim?.pid).toBe(process.pid)
-    expect([claim?.question, claim?.answer]).toEqual([undefined, undefined])
+    expect(claim).toMatchObject({ sessionId: relaunched?.sessionId, pid: process.pid, restarts: 2 })
+    expect(claim?.handoff).toBeUndefined()
   })
 
-  it('starts the review an executor died in over when it restarts that executor', async () => {
+  it('starts the review an executor died in over when it relaunches that executor', async () => {
     const { store, scheduler } = setUp()
     updateState(store, state => {
       claimRoot(
@@ -147,7 +154,9 @@ describe('scheduler', () => {
     await vi.waitFor(() => expect(spawnSession).toHaveBeenCalledOnce())
 
     expect(readState(store).tasks['T1']).toMatchObject({ state: 'claimed', claim: { restarts: 1 } })
-    expect(readState(store).tasks['T1']?.log.at(-1)?.event).toBe('reopened: its executor stopped during the review')
+    expect(readState(store).tasks['T1']?.log.map(entry => entry.event)).toContain(
+      'reopened: its executor stopped during the review',
+    )
   })
 
   it('reports a cleanup that fails and goes on scheduling', async () => {
