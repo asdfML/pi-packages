@@ -30,6 +30,7 @@ describe('governor extension', () => {
       'bash',
       'session_list',
       'task_declare',
+      'task_revise',
       'task_list',
       'task_show',
       'task_cancel',
@@ -105,6 +106,74 @@ describe('governor extension', () => {
       reviews: [{ verdict: 'pass' }, { reviewer: 'boss', verdict: 'fail', findings: 'Duplicates the lexer' }],
     })
     await vi.waitFor(() => expect(readState(storeDirectory(workspace.repo)).tasks[approved]?.state).toBe('done'))
+  })
+
+  it('lets the coordinator revise a task that waits to start or for its answer, but not one at work', async () => {
+    const governor = loadGovernor({ cwd: workspace.repo, sessionId: 'boss' })
+    await governor.start()
+    await governor.command('coordinate')
+    await governor.command('pause')
+    const store = storeDirectory(workspace.repo)
+    updateState(store, state => {
+      declareRoot(state, PARSER_SPEC, 'main', [], 'boss', 1)
+      for (const [id, pid] of [
+        ['T2', DEAD_PID],
+        ['T3', process.pid],
+      ] as const) {
+        declareRoot(state, PARSER_SPEC, 'main', [], 'boss', 1)
+        claimRoot(
+          state,
+          id,
+          {
+            sessionId: `executor-${id}`,
+            pid,
+            workspace: { name: `task-${id}`, path: workspace.root },
+            restarts: 2,
+            question: 'Which API?',
+          },
+          2,
+        )
+      }
+    })
+
+    await governor.tool('task_revise', { id: 'T1', reason: 'Only the lexer is broken', boundary: 'src/lexer only' })
+    await governor.tool('task_revise', {
+      id: 'T2',
+      reason: 'The check named no test',
+      acceptance: [{ statement: 'Lexer tests pass', check: 'pnpm test lexer' }],
+    })
+    await expect(governor.tool('task_revise', { id: 'T3', reason: 'Too late', title: 'Other' })).rejects.toThrow(
+      'T3 has no executor waiting for an answer',
+    )
+
+    const { tasks } = readState(store)
+    expect(tasks['T1']).toMatchObject({ state: 'declared', spec: { boundary: 'src/lexer only' } })
+    expect(tasks['T1']?.log.at(-1)?.event).toBe('brief of T1 revised by boss: Only the lexer is broken')
+    expect(tasks['T2']?.spec.acceptance.map(criterion => criterion.check)).toEqual(['pnpm test lexer'])
+    expect(tasks['T2']?.claim).toMatchObject({ restarts: 0, handoff: true })
+    expect(tasks['T2']?.claim?.question).toBeUndefined()
+    expect(tasks['T2']?.log.at(-1)?.event).toBe('brief of T2 revised by boss: The check named no test')
+    expect(tasks['T3']?.title).toBe('Fix the parser')
+  })
+
+  it('sends a task the coordinator revises at its sign-off back to be reviewed against the new brief', async () => {
+    const governor = loadGovernor({ cwd: workspace.repo, sessionId: 'boss' })
+    await governor.start()
+    await governor.command('coordinate')
+    // Paused before the task waits for its sign-off, so no sign-off request or fresh executor outlives the test.
+    await governor.command('pause')
+    const signed = await signedOff(workspace, 'a.txt', 'a\n')
+
+    await governor.tool('task_revise', { id: signed, reason: 'Keep the old API', nonGoals: ['Changing the API'] })
+
+    expect(readState(storeDirectory(workspace.repo)).tasks[signed]).toMatchObject({
+      state: 'claimed',
+      spec: { nonGoals: ['Changing the API'] },
+      reviews: [
+        { verdict: 'pass' },
+        { reviewer: 'boss', verdict: 'fail', findings: 'its brief was revised: Keep the old API' },
+      ],
+    })
   })
 
   it('reminds the coordinator to hand off once it has run its turns', async () => {

@@ -14,6 +14,7 @@ import { nonBlank, textResult } from './tooling.js'
 
 const COORDINATOR_TOOLS: string[] = [
   'task_declare',
+  'task_revise',
   'task_list',
   'task_show',
   'task_cancel',
@@ -48,6 +49,22 @@ function describeRun(state: State, task: Task): string {
 
 export function renderBoard(state: State): string {
   return renderTree(state, task => describeRun(state, task))
+}
+
+/** Hands a root task whose executor waits for the coordinator to a fresh executor session, which finds `event` in its history. */
+export function unblock(task: Task, event: string): void {
+  const { claim } = task
+  if (claim === undefined || !['asking', 'stalled'].includes(executorStatus(claim))) {
+    throw new Error(`${task.id} has no executor waiting for an answer; message a running one with session_send.`)
+  }
+  if (claim.sessionId === undefined) {
+    throw new Error(`${task.id} stalled before its executor started; cancel it and declare it again.`)
+  }
+  claim.question = undefined
+  claim.stalled = undefined
+  claim.restarts = 0
+  claim.handoff = true
+  logEvent(task, event, Date.now())
 }
 
 function renderDetails(state: State, task: Task): string {
@@ -128,23 +145,7 @@ export function registerCoordinatorTools(pi: ExtensionAPI, host: Host): void {
       defaultActive: false,
       async execute(_toolCallId, params) {
         const runtime = requireRole(host.runtime(), 'coordinator')
-        updateState(runtime.store, state => {
-          const task = requireTask(state, params.id)
-          const { claim } = task
-          if (claim === undefined || !['asking', 'stalled'].includes(executorStatus(claim))) {
-            throw new Error(
-              `${params.id} has no executor waiting for an answer; message a running one with session_send.`,
-            )
-          }
-          if (claim.sessionId === undefined) {
-            throw new Error(`${params.id} stalled before its executor started; cancel it and declare it again.`)
-          }
-          claim.question = undefined
-          claim.stalled = undefined
-          claim.restarts = 0
-          claim.handoff = true
-          logEvent(task, `answered: ${params.answer}`, Date.now())
-        })
+        updateState(runtime.store, state => unblock(requireTask(state, params.id), `answered: ${params.answer}`))
         host.changed()
 
         return textResult(`A fresh executor session continues ${params.id} with your answer.`)

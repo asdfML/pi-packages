@@ -2,9 +2,22 @@ import type { Host } from './tooling.js'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { defineTool } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
+import { unblock } from './coordinator.js'
 import { requireRole } from './runtime.js'
 import { readState, updateState } from './store.js'
-import { claimedRoot, declareChild, declareRoot, focusOf, renderBrief } from './task.js'
+import {
+  claimedRoot,
+  declareChild,
+  declareRoot,
+  focusOf,
+  isOpen,
+  logEvent,
+  renderBrief,
+  requireTask,
+  reviseBrief,
+  rootOf,
+  sendBack,
+} from './task.js'
 import { nonBlank, textResult } from './tooling.js'
 import { bookmarkCommit, commitWorkingCopy, headOf } from './vcs.js'
 
@@ -55,6 +68,51 @@ export function registerDeclareTools(pi: ExtensionAPI, host: Host): void {
         host.changed()
 
         return textResult(`Declared:\n\n${brief}`)
+      },
+    }),
+  )
+
+  pi.registerTool(
+    defineTool({
+      name: 'task_revise',
+      label: 'Revise task',
+      description:
+        'Revise the brief of a task no executor is working on: a root task that waits to start or for your sign-off, or a task whose executor waits for your answer or stalled. Give only the parts that change; new acceptance criteria replace the old ones. A task its executor left waiting goes on in a fresh executor session, and one that waited for your sign-off goes back to be reviewed against the new brief.',
+      parameters: Type.Object({
+        id: nonBlank('Task id, such as T3 or T3.1'),
+        reason: nonBlank('Why the brief changes, for whoever works the task next'),
+        ...Type.Partial(Type.Object(SPEC_PARAMETERS)).properties,
+      }),
+      defaultActive: false,
+      async execute(_toolCallId, params) {
+        const runtime = requireRole(host.runtime(), 'coordinator')
+        const { id, reason, ...changes } = params
+        const result = updateState(runtime.store, state => {
+          const task = requireTask(state, id)
+          if (!isOpen(task)) {
+            throw new Error(`${id} is already ${task.state}.`)
+          }
+          const root = rootOf(state, task)
+          reviseBrief(state, task, changes)
+          const brief = renderBrief(state, task)
+          const event = `brief of ${id} revised by ${runtime.sessionId}: ${reason}`
+          if (root.state === 'declared') {
+            logEvent(root, event, Date.now())
+
+            return `${brief}\n\nIt starts on this brief once its turn comes.`
+          }
+          if (root.state === 'approving') {
+            sendBack(state, root.id, runtime.sessionId, `its brief was revised: ${reason}`, Date.now())
+
+            return `${brief}\n\nIt goes back to its executor to be reviewed against this brief.`
+          }
+          unblock(root, event)
+
+          return `${brief}\n\nA fresh executor session continues ${root.id} on this brief.`
+        })
+        host.changed()
+
+        return textResult(`Revised:\n\n${result}`)
       },
     }),
   )

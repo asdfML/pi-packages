@@ -15,6 +15,7 @@ import {
   renderBrief,
   renderTree,
   reopen,
+  reviseBrief,
   sendBack,
   waitsFor,
 } from '../src/task.js'
@@ -96,6 +97,29 @@ describe('declaring tasks', () => {
     )
     completeMerge(current, 'T1', 'c1', 9)
     expect(waitsFor(current, waiting)).toEqual([])
+  })
+
+  it('revises only the parts of a brief it is given, numbering new criteria afresh before the global checks', () => {
+    const current = state()
+    const task = declareRoot(current, PARSER_SPEC, 'main', [], 'coordinator', 1)
+
+    reviseBrief(current, task, {
+      title: 'Fix the lexer',
+      acceptance: [{ statement: 'Lexer tests pass', check: 'pnpm test lexer' }],
+    })
+    reviseBrief(current, task, { boundary: 'src/lexer only' })
+
+    expect(task.title).toBe('Fix the lexer')
+    expect(task.spec).toEqual({
+      problem: PARSER_SPEC.problem,
+      scope: PARSER_SPEC.scope,
+      boundary: 'src/lexer only',
+      nonGoals: PARSER_SPEC.nonGoals,
+      acceptance: [
+        { id: 'A1', statement: 'Lexer tests pass', check: 'pnpm test lexer' },
+        { id: 'G1', statement: 'Lint passes', check: 'pnpm lint' },
+      ],
+    })
   })
 })
 

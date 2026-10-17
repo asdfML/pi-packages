@@ -128,7 +128,7 @@ export function registerExecutor(pi: ExtensionAPI, host: Host): void {
         await tellCoordinator(
           runtime,
           rootId,
-          `${rootId} asks: ${params.question}\n\nAnswer it with task_answer.`,
+          `${rootId} asks: ${params.question}\n\nAnswer it with task_answer, or with task_revise where its brief is at fault.`,
           true,
         )
 

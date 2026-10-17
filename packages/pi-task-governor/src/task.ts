@@ -135,8 +135,12 @@ export function claimedRoot(state: State, sessionId: string): Task | undefined {
   )
 }
 
+export function rootOf(state: State, task: Task): Task {
+  return task.parentId === undefined ? task : rootOf(state, requireTask(state, task.parentId))
+}
+
 function claimOf(state: State, task: Task): Claim | undefined {
-  return task.parentId === undefined ? task.claim : claimOf(state, requireTask(state, task.parentId))
+  return rootOf(state, task).claim
 }
 
 /** The open tasks from a root down to the deepest one, where depth-first work always happens. */
@@ -155,16 +159,31 @@ export function waitsFor(state: State, task: Task): string[] {
   return (task.after ?? []).filter(id => requireTask(state, id).state !== 'done')
 }
 
+function criteria(acceptance: SpecInput['acceptance'], globalChecks: GovernorConfig['globalChecks']): Criterion[] {
+  return [
+    ...acceptance.map((criterion, index) => ({ id: `A${index + 1}`, ...criterion })),
+    ...globalChecks.map((criterion, index) => ({ id: `G${index + 1}`, ...criterion })),
+  ]
+}
+
 function buildSpec(input: SpecInput, globalChecks: GovernorConfig['globalChecks']): Spec {
   return {
     problem: input.problem,
     scope: input.scope,
     boundary: input.boundary,
     nonGoals: input.nonGoals,
-    acceptance: [
-      ...input.acceptance.map((criterion, index) => ({ id: `A${index + 1}`, ...criterion })),
-      ...globalChecks.map((criterion, index) => ({ id: `G${index + 1}`, ...criterion })),
-    ],
+    acceptance: criteria(input.acceptance, globalChecks),
+  }
+}
+
+/** Replaces the parts of a task's brief that `changes` gives; a new list of criteria is numbered afresh. */
+export function reviseBrief(state: State, task: Task, changes: Partial<SpecInput>): void {
+  const { title = task.title, acceptance, ...brief } = changes
+  task.title = title
+  task.spec = {
+    ...task.spec,
+    ...brief,
+    ...(acceptance === undefined ? {} : { acceptance: criteria(acceptance, state.config.globalChecks) }),
   }
 }
 
