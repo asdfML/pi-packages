@@ -17,9 +17,9 @@ export interface Workspace {
   path: string
 }
 
-/** `onto` is the bookmark commit a merge that did not land took in, where the task's own changes now start. */
+/** `onto` is the bookmark commit the merge built on, where the task's own changes now start. */
 export type MergeResult =
-  | { kind: 'merged'; commit: string }
+  | { kind: 'merged'; commit: string; onto: string }
   | { kind: 'conflicted'; onto: string }
   | { kind: 'failed-checks'; detail: string; onto: string }
 
@@ -121,6 +121,33 @@ export async function diff(repo: string, from: string, to: string, stat: boolean
   return stdout
 }
 
+function lines(stdout: string): string[] {
+  return stdout.split('\n').filter(line => line !== '')
+}
+
+export async function changedFiles(repo: string, from: string, to: string): Promise<string[]> {
+  const { stdout } = await inRepo(repo, ['diff', '--name-only', '--from', from, '--to', to])
+
+  return lines(stdout)
+}
+
+/** Those of `commits` that the bookmark took in after `base`. */
+export async function landedAfter(repo: string, base: string, bookmark: string, commits: string[]): Promise<string[]> {
+  if (commits.length === 0) {
+    return []
+  }
+  const { stdout } = await inRepo(repo, [
+    'log',
+    '--no-graph',
+    '-r',
+    `(${base}..${quote(bookmark)}) & (${commits.join(' | ')})`,
+    '-T',
+    'commit_id ++ "\\n"',
+  ])
+
+  return lines(stdout)
+}
+
 /**
  * Merges a signed-off task into its bookmark, which only ever moves forward. A head that does not descend from the
  * bookmark is rebased onto it first, as a dry run: on conflict the rebase is dropped and the workspace gets a merge
@@ -169,7 +196,7 @@ export async function mergeInto(
     try {
       await inRepo(repo, ['bookmark', 'set', bookmark, '-r', target])
 
-      return { kind: 'merged', commit: target }
+      return { kind: 'merged', commit: target, onto }
     } catch (error) {
       if (attempt === MERGE_ATTEMPTS || (await isAncestor(repo, quote(bookmark), target))) {
         throw error

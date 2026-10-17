@@ -1,4 +1,4 @@
-import type { Claim, Task } from './task.js'
+import type { Claim, State, Task } from './task.js'
 import type { Host } from './tooling.js'
 import { randomUUID } from 'node:crypto'
 import { existsSync, rmSync } from 'node:fs'
@@ -17,7 +17,16 @@ import { executorPrompt, signOffRequest } from './prompts.js'
 import { readState, updateState } from './store.js'
 import { claimRoot, completeMerge, focusOf, isOpen, logEvent, reopen, requireTask, waitsFor } from './task.js'
 import { describeError } from './tooling.js'
-import { addWorkspace, bookmarkCommit, diff, headOf, mergeInto, removeWorkspace } from './vcs.js'
+import {
+  addWorkspace,
+  bookmarkCommit,
+  changedFiles,
+  diff,
+  headOf,
+  landedAfter,
+  mergeInto,
+  removeWorkspace,
+} from './vcs.js'
 
 export const STORE_FLAG = 'governor-store'
 const EXECUTOR_TOOLS: string[] = [
@@ -63,6 +72,42 @@ export function executorStatus(claim: Claim): ExecutorStatus {
 
 function sequence(task: Task): number {
   return Number(task.id.slice(1))
+}
+
+/**
+ * The other root tasks of `task`'s bookmark that change files it changes, with those files: the ones merged since it
+ * started, and the open ones with a workspace. A task's own changes run from its base to its head, which is its merge
+ * once it has landed.
+ */
+async function overlappingTasks(
+  repoRoot: string,
+  state: State,
+  task: Task,
+): Promise<{ task: Task; files: string[] }[]> {
+  const base = task.base.commit!
+  const own = new Set(await changedFiles(repoRoot, base, task.signedCommit!))
+  const others = Object.values(state.tasks).filter(
+    other => other.parentId === undefined && other.id !== task.id && other.base.bookmark === task.base.bookmark,
+  )
+  const merged = others.filter(other => other.state === 'done')
+  const landed = await landedAfter(
+    repoRoot,
+    base,
+    task.base.bookmark!,
+    merged.map(other => other.merged!),
+  )
+  const overlapWith = async (other: Task, head: string): Promise<{ task: Task; files: string[] }> => ({
+    task: other,
+    files: (await changedFiles(repoRoot, other.base.commit!, head)).filter(file => own.has(file)),
+  })
+  const overlaps = await Promise.all([
+    ...merged.filter(other => landed.includes(other.merged!)).map(async other => overlapWith(other, other.merged!)),
+    ...others
+      .filter(other => isOpen(other) && other.claim?.sessionId !== undefined)
+      .map(async other => overlapWith(other, await headOf(repoRoot, other.claim!.workspace))),
+  ])
+
+  return overlaps.filter(overlap => overlap.files.length > 0)
 }
 
 /**
@@ -177,10 +222,14 @@ export function createScheduler(host: Host, notify: (message: string, wake: bool
     launch(store, task.id)
   }
 
-  async function requestSignOff(repoRoot: string, task: Task): Promise<void> {
+  async function requestSignOff(repoRoot: string, state: State, task: Task): Promise<void> {
     const [base, head] = [task.base.commit!, task.signedCommit!]
-    const [stat, change] = await Promise.all([diff(repoRoot, base, head, true), diff(repoRoot, base, head, false)])
-    notify(signOffRequest(task, stat, change), true)
+    const [stat, change, overlapping] = await Promise.all([
+      diff(repoRoot, base, head, true),
+      diff(repoRoot, base, head, false),
+      overlappingTasks(repoRoot, state, task),
+    ])
+    notify(signOffRequest(state, task, stat, change, overlapping), true)
   }
 
   function returnFromMerge(store: string, taskId: string, reason: string, onto?: string): void {
@@ -205,7 +254,7 @@ export function createScheduler(host: Host, notify: (message: string, wake: bool
       switch (result.kind) {
         case 'merged': {
           const finished = updateState(store, state => {
-            completeMerge(state, task.id, result.commit, Date.now())
+            completeMerge(state, task.id, result.commit, result.onto, Date.now())
 
             return Object.values(state.tasks).every(other => !isOpen(other))
           })
@@ -281,7 +330,7 @@ export function createScheduler(host: Host, notify: (message: string, wake: bool
       const request = `${task.id}:${task.reviews.length}`
       if (task.approvedBy === undefined && !requested.has(request)) {
         requested.add(request)
-        await requestSignOff(repoRoot, task)
+        await requestSignOff(repoRoot, state, task)
       } else if (task.approvedBy !== undefined && !merging) {
         merging = true
         void merge(store, repoRoot, task).finally(() => {

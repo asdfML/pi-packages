@@ -96,7 +96,7 @@ describe('declaring tasks', () => {
     expect(renderBrief(current, waiting)).toContain(
       'Builds on these tasks, merged before it starts:\n- T1: Fix the parser',
     )
-    completeMerge(current, 'T1', 'c1', 9)
+    completeMerge(current, 'T1', 'c1', 'c0', 9)
     expect(waitsFor(current, waiting)).toEqual([])
   })
 
@@ -203,8 +203,13 @@ describe('reviewing tasks', () => {
     approve(current, 'T1', 'coordinator', 6)
     expect(current.tasks['T1']?.claim?.sessions).toBe(0)
     expect(() => approve(current, 'T1', 'coordinator', 6)).toThrow('T1 is not waiting for a sign-off.')
-    completeMerge(current, 'T1', 'c3', 7)
-    expect(current.tasks['T1']).toMatchObject({ state: 'done', approvedBy: 'coordinator', merged: 'c3' })
+    completeMerge(current, 'T1', 'c3', 'main2', 7)
+    expect(current.tasks['T1']).toMatchObject({
+      state: 'done',
+      approvedBy: 'coordinator',
+      merged: 'c3',
+      base: { bookmark: 'main', commit: 'main2' },
+    })
   })
 
   it("keeps the coordinator's refusal as a failed review and hands the task to a fresh executor session", () => {

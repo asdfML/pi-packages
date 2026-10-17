@@ -21,7 +21,7 @@ const ROLE_SECTIONS: Record<Role, string> = {
     '- non-goals: what it must leave alone, so its executor knows where to stop',
     '- acceptance criteria: conditions that hold once it is done, with a check command wherever a command can tell; a check runs in the task workspace inside the repository environment and passes on exit 0',
     "Keep each brief about its own task, since executors already follow the user's and the repository's standing instructions. Tasks that change the same lines merge one after another, and the later one must resolve the conflict and be reviewed again.",
-    "Your sign-off is the last check before a task merges. Its reviewer has already checked every criterion with evidence, so judge what a reviewer of one task cannot: whether the change fits the direction of the whole and the architecture, and agrees with the other tasks. The request shows the change, the evidence and the executor's note; read more of the code only where they leave doubt. Approve with task_approve, or send the task back with task_reject and findings its executor can act on.",
+    "Your sign-off is the last check before a task merges. Its reviewer has already checked every criterion with evidence, so judge what a reviewer of one task cannot: whether the change fits the direction of the whole and the architecture, and agrees with the other tasks. The request shows the change, the evidence, the executor's note, the other tasks that change the same files, and the tasks waiting for it, whose briefs you can still revise with task_revise before they start; read more of the code only where they leave doubt. Approve with task_approve, or send the task back with task_reject and findings its executor can act on.",
     'Executors reach you only through messages, and everything that needs you arrives as one, so never poll. When an executor asks, answer with task_answer from the brief and what you know; a product or policy decision only the user can make goes to the user, and you pass their answer on. A task whose review keeps failing also asks you how to go on, and one that runs through several executor sessions without word from you stalls: read it with task_show, and session_read on its executor if you need more, then unblock it with task_answer, or cancel it with task_cancel. Where its brief is what is wrong, such as a check that can never pass, fix the brief with task_revise, which sets the task going again too. Merge and exit notices need no reply and do not wake you, except the one saying every task is finished, which does so that you can report the outcome. task_list shows the whole board.',
     "Permission requests from executors, developers and reviewers come to this session: the user's authorizer chain decides them, or the user is asked here.",
   ].join('\n'),
@@ -117,11 +117,27 @@ function describeEvidence(evidence: Evidence): string {
   return evidence.kind === 'check' ? `\`${evidence.command}\` passed` : evidence.text
 }
 
-/** What the coordinator signs a reviewed root task off from: its change, its reviewer's evidence and its note. */
-export function signOffRequest(task: Task, stat: string, diff: string): string {
+/**
+ * What the coordinator signs a reviewed root task off from: its change, its reviewer's evidence and its note, the
+ * other tasks that change files it changes, and the tasks that start once it merges.
+ */
+export function signOffRequest(
+  state: State,
+  task: Task,
+  stat: string,
+  diff: string,
+  overlapping: { task: Task; files: string[] }[],
+): string {
   const review = task.reviews.at(-1)!
   const command = `jj diff --from ${task.base.commit} --to ${task.signedCommit}`
   const lines = diff.trimEnd().split('\n')
+  const overlaps = overlapping.map(
+    ({ task: other, files }) =>
+      `- ${other.id}, ${other.state === 'done' ? `merged into ${task.base.bookmark} since ${task.id} started` : 'still open'}: ${files.join(', ')}`,
+  )
+  const waiting = Object.values(state.tasks).flatMap(other =>
+    other.state === 'declared' && other.after?.includes(task.id) === true ? [`- ${other.id}: ${other.title}`] : [],
+  )
 
   return [
     `${task.id} passed its review and waits for your sign-off before it merges into ${task.base.bookmark}: ${task.title}`,
@@ -134,6 +150,12 @@ export function signOffRequest(task: Task, stat: string, diff: string): string {
     lines.length > SIGN_OFF_DIFF_LINES
       ? `The diff runs to ${lines.length} lines; read it with \`${command}\` where the rest leaves doubt.`
       : lines.join('\n'),
+    ...(overlaps.length === 0 ? [] : [`Other tasks change files that ${task.id} changes too:\n${overlaps.join('\n')}`]),
+    ...(waiting.length === 0
+      ? []
+      : [
+          `These tasks wait for ${task.id} and start as soon as it merges, on briefs written before it ran:\n${waiting.join('\n')}\nBefore you approve ${task.id}, revise with task_revise each one whose brief no longer fits what it did.`,
+        ]),
     `Approve ${task.id} with task_approve, or send it back with task_reject and findings.`,
   ].join('\n\n')
 }

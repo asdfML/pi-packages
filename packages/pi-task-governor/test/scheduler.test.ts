@@ -102,7 +102,7 @@ describe('scheduler', () => {
     scheduler.tick()
     await vi.waitFor(() => expect(spawnSession).toHaveBeenCalledOnce())
     expect(readState(store).tasks['T2']?.state).toBe('declared')
-    updateState(store, state => completeMerge(state, 'T1', 'c1', 2))
+    updateState(store, state => completeMerge(state, 'T1', 'c1', 'c0', 2))
     scheduler.tick()
 
     await vi.waitFor(() => expect(spawnSession).toHaveBeenCalledTimes(2))
@@ -231,6 +231,34 @@ describe('scheduler', () => {
     expect(spawnSession).not.toHaveBeenCalled()
   })
 
+  it('tells the coordinator which other tasks change the same files, and which wait, as it signs a task off', async () => {
+    const { store, scheduler, notify } = setUp({}, 0)
+    const merged = await signedOff(workspace, 'shared.txt', 'line1\nline2 by T1\nline3\n')
+    const reviewed = await signedOff(workspace, 'shared.txt', 'line1\nline2\nline3 by T2\n')
+    const open = await signedOff(workspace, 'shared.txt', 'line1 by T3\nline2\nline3\n')
+    const { base, signedCommit } = readState(store).tasks[merged]!
+    jj(workspace.repo, 'bookmark', 'set', 'main', '-r', signedCommit!)
+    updateState(store, state => {
+      completeMerge(state, merged, signedCommit!, base.commit!, 5)
+      declareRoot(state, PARSER_SPEC, 'main', [reviewed], 'boss', 6)
+    })
+
+    scheduler.tick()
+
+    await vi.waitFor(() =>
+      expect(notify.mock.calls.filter(([message]) => message.includes('passed its review'))).toHaveLength(2),
+    )
+    const [request] = notify.mock.calls.flatMap(([message]) =>
+      message.startsWith(`${reviewed} passed its review`) ? [message] : [],
+    )
+    expect(request).toContain(
+      `Other tasks change files that ${reviewed} changes too:\n- ${merged}, merged into main since ${reviewed} started: shared.txt\n- ${open}, still open: shared.txt`,
+    )
+    expect(request).toContain(
+      `These tasks wait for ${reviewed} and start as soon as it merges, on briefs written before it ran:\n- T4: Fix the parser`,
+    )
+  })
+
   it('merges a task the coordinator approved, then removes its workspace', async () => {
     const { store, scheduler, notify } = setUp({}, 0)
     const id = await signedOff(workspace, 'a.txt', 'a\n')
@@ -289,7 +317,7 @@ describe('scheduler', () => {
   })
 
   it('reports an approved merge that fails, and drops the approval for the coordinator to give again', async () => {
-    const { store, scheduler, notify } = setUp({}, 0)
+    const { store, scheduler, notify, changed } = setUp({}, 0)
     const id = await signedOff(workspace, 'a.txt', 'a\n')
     updateState(store, state => {
       approve(state, id, 'boss', 5)
@@ -301,6 +329,8 @@ describe('scheduler', () => {
     await vi.waitFor(() =>
       expect(notify).toHaveBeenCalledWith(expect.stringContaining(`Merging ${id} into gone failed`), true),
     )
+    // The pass the failed merge starts asks for the sign-off again.
+    await vi.waitFor(() => expect(changed).toHaveBeenCalledTimes(2))
     const task = readState(store).tasks[id]
     expect([task?.state, task?.approvedBy]).toEqual(['approving', undefined])
   })

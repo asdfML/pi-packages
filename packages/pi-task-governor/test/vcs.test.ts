@@ -5,10 +5,12 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   addWorkspace,
   bookmarkCommit,
+  changedFiles,
   commitWorkingCopy,
   diff,
   headOf,
   isClean,
+  landedAfter,
   mergeInto,
   removeWorkspace,
 } from '../src/vcs.js'
@@ -50,9 +52,30 @@ describe('jj controller', () => {
     expect(await diff(repo, base, await headOf(repo, task!), false)).toContain('+line2 fixed')
   })
 
+  it('lists the files a change touches, and which commits a bookmark took in after a base', async () => {
+    const {
+      repo,
+      base,
+      workspaces: [first, second],
+    } = await setUp('T1', 'T2')
+    edit(first!, 'a.txt', 'a\n')
+    edit(first!, 'shared.txt', 'line1\nline2 by T1\nline3\n')
+    await commitWorkingCopy(first!, 'T1: edit')
+    edit(second!, 'b.txt', 'b\n')
+    await commitWorkingCopy(second!, 'T2: add b')
+    const [landed, open] = [await headOf(repo, first!), await headOf(repo, second!)]
+    jj(repo, 'bookmark', 'set', 'main', '-r', landed)
+
+    expect(await changedFiles(repo, base, landed)).toEqual(['a.txt', 'shared.txt'])
+    expect(await landedAfter(repo, base, 'main', [landed, open])).toEqual([landed])
+    expect(await landedAfter(repo, landed, 'main', [landed])).toEqual([])
+    expect(await landedAfter(repo, base, 'main', [])).toEqual([])
+  })
+
   it('fast-forwards the bookmark to a head that already descends from it', async () => {
     const {
       repo,
+      base,
       workspaces: [task],
     } = await setUp('T1')
     edit(task!, 'a.txt', 'a\n')
@@ -61,7 +84,7 @@ describe('jj controller', () => {
 
     const result = await mergeInto(repo, task!, 'main', 'T1: merge main', verify)
 
-    expect(result).toEqual({ kind: 'merged', commit: await headOf(repo, task!) })
+    expect(result).toEqual({ kind: 'merged', commit: await headOf(repo, task!), onto: base })
     expect(await bookmarkCommit(repo, 'main')).toBe(await headOf(repo, task!))
     expect(verify).not.toHaveBeenCalled()
   })
@@ -76,11 +99,12 @@ describe('jj controller', () => {
     await mergeInto(repo, first!, 'main', 'T1: merge main', async () => undefined)
     edit(second!, 'b.txt', 'b\n')
     await commitWorkingCopy(second!, 'T2: add b')
+    const landed = await bookmarkCommit(repo, 'main')
 
     const verify = vi.fn(async () => (existsSync(join(second!.path, 'a.txt')) ? undefined : 'a.txt missing'))
     const result = await mergeInto(repo, second!, 'main', 'T2: merge main', verify)
 
-    expect(result).toEqual({ kind: 'merged', commit: await bookmarkCommit(repo, 'main') })
+    expect(result).toEqual({ kind: 'merged', commit: await bookmarkCommit(repo, 'main'), onto: landed })
     expect(verify).toHaveBeenCalledOnce()
     expect(jj(second!.path, 'log', '--no-graph', '-r', '::main', '-T', 'description.first_line() ++ "\\n"')).toContain(
       'T1: add a',
@@ -132,7 +156,7 @@ describe('jj controller', () => {
     await commitWorkingCopy(second!, 'T2: merge main')
     const result = await mergeInto(repo, second!, 'main', 'T2: merge main', async () => undefined)
 
-    expect(result).toEqual({ kind: 'merged', commit: await headOf(repo, second!) })
+    expect(result).toEqual({ kind: 'merged', commit: await headOf(repo, second!), onto: merged })
   })
 
   it('forgets a workspace and deletes its directory', async () => {

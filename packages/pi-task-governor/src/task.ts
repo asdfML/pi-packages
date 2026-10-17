@@ -72,7 +72,7 @@ export interface Task {
   spec: Spec
   /**
    * A root task branches from `bookmark` and merges back into it. `commit` is where the task's own changes start: pinned
-   * when work on the task starts, and moved when a merge that did not land took in newer work from the bookmark.
+   * when work on the task starts, and moved whenever a merge, landed or not, takes in newer work from the bookmark.
    */
   base: { bookmark?: string | undefined; commit?: string | undefined }
   /** Root tasks of the same bookmark that must be merged before this one starts. */
@@ -363,10 +363,12 @@ export function sendBack(state: State, id: string, by: string, findings: string,
   return reopen(state, id, `sent back by ${by}: ${findings}`, now)
 }
 
-export function completeMerge(state: State, id: string, commit: string, now: number): Task {
+/** `onto` is the bookmark commit the task landed on, where its own changes start. */
+export function completeMerge(state: State, id: string, commit: string, onto: string, now: number): Task {
   const task = requireTask(state, id)
   task.state = 'done'
   task.merged = commit
+  task.base.commit = onto
   logEvent(task, `merged into ${task.base.bookmark} as ${commit}`, now)
 
   return task
