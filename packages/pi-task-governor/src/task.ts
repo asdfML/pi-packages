@@ -54,13 +54,13 @@ export interface Claim {
   /** Of the executor process while it runs; a session presenting the id from another pid is not the claimer. */
   pid: number | undefined
   workspace: { name: string; path: string }
-  /** Restarts after the executor stopped without finishing. */
-  restarts: number
+  /** Executor sessions started since the coordinator last answered, revised, approved or sent back the task. */
+  sessions: number
   question?: string | undefined
   stalled?: string | undefined
   /**
-   * A fresh executor session takes over without counting as a restart: the last one handed off, the coordinator
-   * answered it, or the task came back. The task's log tells the new session which.
+   * The last executor session ended on purpose rather than giving up: it handed off, the coordinator answered it, or
+   * the task came back. The task's log tells the new session which.
    */
   handoff?: boolean | undefined
 }
@@ -330,6 +330,11 @@ export function recordVerdict(state: State, id: string, review: Review): Task {
   return task
 }
 
+/** The reviews a task failed since it last passed one, the coordinator's refusals included. */
+export function failedReviewsInARow(task: Task): number {
+  return task.reviews.length - 1 - task.reviews.findLastIndex(review => review.verdict === 'pass')
+}
+
 function awaitingSignOff(state: State, id: string): Task {
   const task = requireTask(state, id)
   if (task.state !== 'approving' || task.approvedBy !== undefined) {
@@ -343,6 +348,7 @@ function awaitingSignOff(state: State, id: string): Task {
 export function approve(state: State, id: string, by: string, now: number): Task {
   const task = awaitingSignOff(state, id)
   task.approvedBy = by
+  task.claim!.sessions = 0
   logEvent(task, `approved by ${by}`, now)
 
   return task
@@ -352,6 +358,7 @@ export function approve(state: State, id: string, by: string, now: number): Task
 export function sendBack(state: State, id: string, by: string, findings: string, now: number): Task {
   const task = awaitingSignOff(state, id)
   task.reviews.push({ reviewer: by, commit: task.signedCommit!, verdict: 'fail', evidence: {}, findings, at: now })
+  task.claim!.sessions = 0
 
   return reopen(state, id, `sent back by ${by}: ${findings}`, now)
 }

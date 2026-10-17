@@ -76,7 +76,7 @@ describe('governor extension', () => {
           sessionId: undefined,
           pid: undefined,
           workspace: { name: 'task-T1', path: workspace.root },
-          restarts: 0,
+          sessions: 0,
           stalled: 'preparing its workspace failed',
         },
         2,
@@ -128,7 +128,7 @@ describe('governor extension', () => {
             sessionId: `executor-${id}`,
             pid,
             workspace: { name: `task-${id}`, path: workspace.root },
-            restarts: 2,
+            sessions: 2,
             question: 'Which API?',
           },
           2,
@@ -150,7 +150,7 @@ describe('governor extension', () => {
     expect(tasks['T1']).toMatchObject({ state: 'declared', spec: { boundary: 'src/lexer only' } })
     expect(tasks['T1']?.log.at(-1)?.event).toBe('brief of T1 revised by boss: Only the lexer is broken')
     expect(tasks['T2']?.spec.acceptance.map(criterion => criterion.check)).toEqual(['pnpm test lexer'])
-    expect(tasks['T2']?.claim).toMatchObject({ restarts: 0, handoff: true })
+    expect(tasks['T2']?.claim).toMatchObject({ sessions: 0, handoff: true })
     expect(tasks['T2']?.claim?.question).toBeUndefined()
     expect(tasks['T2']?.log.at(-1)?.event).toBe('brief of T2 revised by boss: The check named no test')
     expect(tasks['T3']?.title).toBe('Fix the parser')

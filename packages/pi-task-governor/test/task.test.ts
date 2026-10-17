@@ -10,6 +10,7 @@ import {
   declareChild,
   declareRoot,
   emptyState,
+  failedReviewsInARow,
   focusOf,
   recordVerdict,
   renderBrief,
@@ -21,7 +22,7 @@ import {
 } from '../src/task.js'
 import { PARSER_SPEC } from './helpers.js'
 
-const CLAIM: Claim = { sessionId: 'executor', pid: 1, workspace: { name: 'T1', path: '/ws/T1' }, restarts: 0 }
+const CLAIM: Claim = { sessionId: 'executor', pid: 1, workspace: { name: 'T1', path: '/ws/T1' }, sessions: 0 }
 
 function state(): State {
   return emptyState({ ...DEFAULT_CONFIG, globalChecks: [{ statement: 'Lint passes', check: 'pnpm lint' }] })
@@ -30,7 +31,7 @@ function state(): State {
 function claimed(): State {
   const current = state()
   declareRoot(current, PARSER_SPEC, 'main', [], 'coordinator', 1)
-  claimRoot(current, 'T1', CLAIM, 2)
+  claimRoot(current, 'T1', { ...CLAIM }, 2)
 
   return current
 }
@@ -171,6 +172,23 @@ describe('reviewing tasks', () => {
     expect(current.tasks['T1']).toMatchObject({ state: 'claimed', reviews: [{ verdict: 'fail' }] })
   })
 
+  it("counts the reviews a task failed since it last passed one, the coordinator's refusals included", () => {
+    const current = claimed()
+    const task = current.tasks['T1']!
+    beginReview(current, 'T1', 'executor', 'c1', 3)
+    recordVerdict(current, 'T1', review({ verdict: 'fail', evidence: {}, findings: 'Edge case missed' }))
+    expect(failedReviewsInARow(task)).toBe(1)
+    beginReview(current, 'T1', 'executor', 'c2', 4)
+    recordVerdict(current, 'T1', review({ commit: 'c2', evidence: passingEvidence('c2') }))
+    expect(failedReviewsInARow(task)).toBe(0)
+
+    sendBack(current, 'T1', 'coordinator', 'Duplicates the lexer', 5)
+    beginReview(current, 'T1', 'executor', 'c3', 6)
+    recordVerdict(current, 'T1', review({ commit: 'c3', verdict: 'fail', evidence: {}, findings: 'Still duplicated' }))
+
+    expect(failedReviewsInARow(task)).toBe(2)
+  })
+
   it('finishes a signed subtask at once, and leaves a signed root task to the coordinator before it merges', () => {
     const current = claimed()
     declareChild(current, 'T1', PARSER_SPEC, 'executor', 'c0', 3)
@@ -181,7 +199,9 @@ describe('reviewing tasks', () => {
 
     expect(current.tasks['T1.1']?.state).toBe('done')
     expect(current.tasks['T1']).toMatchObject({ state: 'approving', signedBy: 'reviewer', signedCommit: 'c2' })
+    current.tasks['T1']!.claim!.sessions = 2
     approve(current, 'T1', 'coordinator', 6)
+    expect(current.tasks['T1']?.claim?.sessions).toBe(0)
     expect(() => approve(current, 'T1', 'coordinator', 6)).toThrow('T1 is not waiting for a sign-off.')
     completeMerge(current, 'T1', 'c3', 7)
     expect(current.tasks['T1']).toMatchObject({ state: 'done', approvedBy: 'coordinator', merged: 'c3' })
@@ -191,12 +211,13 @@ describe('reviewing tasks', () => {
     const current = claimed()
     beginReview(current, 'T1', 'executor', 'c1', 3)
     recordVerdict(current, 'T1', review())
+    current.tasks['T1']!.claim!.sessions = 2
     sendBack(current, 'T1', 'coordinator', 'Duplicates the lexer', 4)
 
     expect(current.tasks['T1']).toMatchObject({
       state: 'claimed',
       signedCommit: undefined,
-      claim: { handoff: true },
+      claim: { handoff: true, sessions: 0 },
       reviews: [
         { verdict: 'pass' },
         { reviewer: 'coordinator', commit: 'c1', verdict: 'fail', findings: 'Duplicates the lexer' },

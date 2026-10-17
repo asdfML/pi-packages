@@ -119,17 +119,21 @@ describe('scheduler', () => {
       exits.shift()!()
     }
 
-    await vi.waitFor(() => expect(readState(store).tasks['T1']?.claim?.stalled).toContain('stopped 3 times'))
-    expect(readState(store).tasks['T1']?.claim?.restarts).toBe(2)
+    await vi.waitFor(() =>
+      expect(readState(store).tasks['T1']?.claim?.stalled).toBe(
+        'it went through 3 executor sessions since your last word on it, and the last one stopped before the task ended',
+      ),
+    )
+    expect(readState(store).tasks['T1']?.claim?.sessions).toBe(3)
     expect(new Set(launches().map(options => options.sessionId)).size).toBe(3)
     expect(launches()[1]?.prompt).toContain(`taking over from session ${launches()[0]?.sessionId}`)
     expect(notify).toHaveBeenCalledWith(expect.stringContaining('T1 stalled'), true)
   })
 
-  it("hands a task over to a fresh session that sees the coordinator's answer, counting no restart", async () => {
+  it('hands a task the coordinator answered to a fresh session that sees the answer', async () => {
     const { store, scheduler } = setUp()
     updateState(store, state => {
-      // With no restarts left, so starting at all shows that a handoff counts none.
+      // As task_answer leaves it.
       const task = claimRoot(
         state,
         'T1',
@@ -137,7 +141,7 @@ describe('scheduler', () => {
           sessionId: 'executor-1',
           pid: undefined,
           workspace: { name: 'task-T1', path: workspace.root },
-          restarts: 2,
+          sessions: 0,
           handoff: true,
         },
         2,
@@ -154,8 +158,37 @@ describe('scheduler', () => {
     expect(relaunched?.prompt).toContain('taking over from session executor-1')
     expect(relaunched?.prompt).toContain('- T1 asked: Which API version?\n- T1 answered: Use v2')
     const claim = readState(store).tasks['T1']?.claim
-    expect(claim).toMatchObject({ sessionId: relaunched?.sessionId, pid: process.pid, restarts: 2 })
+    expect(claim).toMatchObject({ sessionId: relaunched?.sessionId, pid: process.pid, sessions: 1 })
     expect(claim?.handoff).toBeUndefined()
+  })
+
+  it("stalls a task that ran through its executor sessions without the coordinator's word, even by handoffs", async () => {
+    const { store, scheduler, notify } = setUp()
+    updateState(store, state => {
+      claimRoot(
+        state,
+        'T1',
+        {
+          sessionId: 'executor-3',
+          pid: undefined,
+          workspace: { name: 'task-T1', path: workspace.root },
+          sessions: 3,
+          handoff: true,
+        },
+        2,
+      )
+    })
+
+    scheduler.tick()
+
+    await vi.waitFor(() =>
+      expect(notify).toHaveBeenCalledWith(
+        'T1 stalled: it went through 3 executor sessions since your last word on it, and the last one handed off',
+        true,
+      ),
+    )
+    expect(readState(store).tasks['T1']?.claim?.stalled).toContain('handed off')
+    expect(spawnSession).not.toHaveBeenCalled()
   })
 
   it('starts the review an executor died in over when it relaunches that executor', async () => {
@@ -164,7 +197,7 @@ describe('scheduler', () => {
       claimRoot(
         state,
         'T1',
-        { sessionId: 'executor-1', pid: DEAD_PID, workspace: { name: 'task-T1', path: workspace.root }, restarts: 0 },
+        { sessionId: 'executor-1', pid: DEAD_PID, workspace: { name: 'task-T1', path: workspace.root }, sessions: 0 },
         2,
       )
       beginReview(state, 'T1', 'executor-1', 'c1', 3)
@@ -173,7 +206,7 @@ describe('scheduler', () => {
     scheduler.tick()
     await vi.waitFor(() => expect(spawnSession).toHaveBeenCalledOnce())
 
-    expect(readState(store).tasks['T1']).toMatchObject({ state: 'claimed', claim: { restarts: 1 } })
+    expect(readState(store).tasks['T1']).toMatchObject({ state: 'claimed', claim: { sessions: 1 } })
     expect(readState(store).tasks['T1']?.log.map(entry => entry.event)).toContain(
       'reopened: its executor stopped during the review',
     )
@@ -280,7 +313,7 @@ describe('scheduler', () => {
       claimRoot(
         state,
         'T1',
-        { sessionId: 'executor-1', pid: DEAD_PID, workspace: { name: 'task-T1', path: stray }, restarts: 0 },
+        { sessionId: 'executor-1', pid: DEAD_PID, workspace: { name: 'task-T1', path: stray }, sessions: 0 },
         2,
       )
       cancelTask(state, 'T1', 'boss', 'not needed', 3)

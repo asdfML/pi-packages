@@ -82,7 +82,7 @@ export async function signedOff(workspace: Workspace, file: string, contents: st
   const head = await headOf(workspace.repo, task)
   saveEnvironment(store, id, { changes: {} })
   updateState(store, state => {
-    claimRoot(state, id, { sessionId: `executor-${id}`, pid: DEAD_PID, workspace: task, restarts: 0 }, 2)
+    claimRoot(state, id, { sessionId: `executor-${id}`, pid: DEAD_PID, workspace: task, sessions: 0 }, 2)
     state.tasks[id]!.base.commit = base
     beginReview(state, id, `executor-${id}`, head, 3)
     recordVerdict(state, id, {

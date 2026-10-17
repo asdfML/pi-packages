@@ -34,7 +34,8 @@ const EXECUTOR_TOOLS: string[] = [
   'task_handoff',
   'session_read',
 ]
-const MAX_RESTARTS = 2
+// Executor sessions a task gets between the coordinator's words on it, however each one ends.
+const MAX_SESSIONS = 3
 
 export type ExecutorStatus = 'preparing' | 'running' | 'asking' | 'handed-off' | 'stalled' | 'stopped'
 
@@ -67,8 +68,8 @@ function sequence(task: Task): number {
 /**
  * Runs in the coordinator, woken by events only: declarations, answers, sign-offs, executor exits and executor mail.
  * It launches executors for root tasks whose turn has come within the budget, gives a task a fresh executor session
- * whenever the last one ended before the task did, asks the coordinator to sign off what passed review and merges
- * what it approved, and removes the workspaces of finished tasks.
+ * whenever the last one ended before the task did until it runs out of sessions, asks the coordinator to sign off what
+ * passed review and merges what it approved, and removes the workspaces of finished tasks.
  */
 export function createScheduler(host: Host, notify: (message: string, wake: boolean) => void): Scheduler {
   let pass: Promise<void> | undefined
@@ -123,6 +124,7 @@ export function createScheduler(host: Host, notify: (message: string, wake: bool
       child.on('exit', tick)
       child.unref()
       claim.pid = child.pid
+      claim.sessions += 1
       claim.handoff = undefined
       logEvent(task, `executor session ${claim.sessionId} started`, Date.now())
     })
@@ -136,7 +138,7 @@ export function createScheduler(host: Host, notify: (message: string, wake: bool
       const task = claimRoot(
         state,
         taskId,
-        { sessionId: undefined, pid: undefined, workspace, restarts: 0 },
+        { sessionId: undefined, pid: undefined, workspace, sessions: 0 },
         Date.now(),
       )
 
@@ -157,18 +159,18 @@ export function createScheduler(host: Host, notify: (message: string, wake: bool
     launch(store, taskId)
   }
 
-  /** A stop before the task ended counts against the restarts; a handoff, the coordinator's answer included, does not. */
   function relaunch(store: string, task: Task, status: ExecutorStatus): void {
-    if (status === 'stopped' && task.claim!.restarts === MAX_RESTARTS) {
-      stall(store, task.id, `its executor stopped ${MAX_RESTARTS + 1} times before the task ended`)
+    if (task.claim!.sessions === MAX_SESSIONS) {
+      stall(
+        store,
+        task.id,
+        `it went through ${MAX_SESSIONS} executor sessions since your last word on it, and the last one ${status === 'stopped' ? 'stopped before the task ended' : 'handed off'}`,
+      )
 
       return
     }
     updateState(store, state => {
       const root = requireTask(state, task.id)
-      if (status === 'stopped') {
-        root.claim!.restarts += 1
-      }
       // A review the stopped executor was running died with it.
       reopen(state, focusOf(state, root).id, 'its executor stopped during the review', Date.now())
     })

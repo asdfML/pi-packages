@@ -42,7 +42,24 @@ function workingRoot(state: State, sessionId: string): Task | undefined {
   return focusOf(state, root).state === 'claimed' ? root : undefined
 }
 
-/** Has the scheduler start a fresh executor session, without counting a restart, once this one ends. */
+/** Leaves the task to the coordinator: this run ends, and a fresh session continues with its answer. */
+export async function askCoordinator(runtime: Runtime, question: string): Promise<void> {
+  const rootId = updateState(runtime.store, state => {
+    const root = claimedRoot(state, runtime.sessionId)!
+    root.claim!.question = question
+    logEvent(root, `asked: ${question}`, Date.now())
+
+    return root.id
+  })
+  await tellCoordinator(
+    runtime,
+    rootId,
+    `${rootId} asks: ${question}\n\nAnswer it with task_answer, or with task_revise where its brief is at fault.`,
+    true,
+  )
+}
+
+/** Has the scheduler start a fresh executor session once this one ends. */
 function handOff(state: State, root: Task, sessionId: string, how: string, note?: string): void {
   if (note !== undefined) {
     focusOf(state, root).note = note
@@ -117,20 +134,7 @@ export function registerExecutor(pi: ExtensionAPI, host: Host): void {
       parameters: Type.Object({ question: nonBlank('The decision you need, with the options you see') }),
       defaultActive: false,
       async execute(_toolCallId, params) {
-        const runtime = requireRole(host.runtime(), 'executor')
-        const rootId = updateState(runtime.store, state => {
-          const root = claimedRoot(state, runtime.sessionId)!
-          root.claim!.question = params.question
-          logEvent(root, `asked: ${params.question}`, Date.now())
-
-          return root.id
-        })
-        await tellCoordinator(
-          runtime,
-          rootId,
-          `${rootId} asks: ${params.question}\n\nAnswer it with task_answer, or with task_revise where its brief is at fault.`,
-          true,
-        )
+        await askCoordinator(requireRole(host.runtime(), 'executor'), params.question)
 
         return textResult(
           'The coordinator has your question. End your turn now; a fresh session continues with the answer.',
@@ -167,7 +171,7 @@ export function registerExecutor(pi: ExtensionAPI, host: Host): void {
     }
     // Once: the turn that ends an aborted run comes after it.
     if (turns === maxTurns) {
-      // One that did no work ends like a session that gave up, which counts against the restarts.
+      // One that did no work ends like a session that gave up.
       if (worked) {
         updateState(runtime.store, current => {
           const root = workingRoot(current, runtime.sessionId)

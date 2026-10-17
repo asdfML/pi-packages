@@ -62,7 +62,7 @@ export function unblock(task: Task, event: string): void {
   }
   claim.question = undefined
   claim.stalled = undefined
-  claim.restarts = 0
+  claim.sessions = 0
   claim.handoff = true
   logEvent(task, event, Date.now())
 }

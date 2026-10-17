@@ -28,7 +28,7 @@ describe('executor session', () => {
     updateState(store, state => {
       state.lease = { sessionId: 'boss', pid: process.pid }
       declareRoot(state, PARSER_SPEC, 'main', [], 'boss', 1)
-      claimRoot(state, 'T1', { sessionId: 'executor-1', pid, workspace: { name: 'task-T1', path }, restarts: 0 }, 2)
+      claimRoot(state, 'T1', { sessionId: 'executor-1', pid, workspace: { name: 'task-T1', path }, sessions: 0 }, 2)
     })
     saveEnvironment(store, 'T1', { changes: { TASK_FLAG: 'on' } })
 
@@ -241,6 +241,48 @@ describe('executor session', () => {
     expect(result.text).toContain("waits for the coordinator's sign-off")
     expect(readState(store).tasks['T1']?.state).toBe('approving')
     expect(await bookmarkCommit(workspace.repo, 'main')).toBe(main)
+    expect(await boundary(session, 'agent_before_settle', { outcome: 'completed' })).toBeUndefined()
+  })
+
+  it('asks the coordinator how to go on once its task has failed its review three times in a row', async () => {
+    const store = await underWay('a.txt', 'hello\n')
+    const failing: typeof runChild = async (_ctx, { binding }) => {
+      updateState(binding.store, state =>
+        recordVerdict(state, binding.taskId, {
+          reviewer: 'reviewer-1',
+          commit: binding.commit,
+          verdict: 'fail',
+          evidence: {},
+          findings: 'a.txt says hello, not hi',
+          at: 3,
+        }),
+      )
+      binding.verdict = 'fail'
+
+      return 'Failed.'
+    }
+    const session = executor(store)
+    await session.start()
+
+    for (let review = 0; review < 2; review += 1) {
+      vi.mocked(runChild).mockImplementationOnce(failing)
+      expect(((await session.tool('task_review', {})).content[0] as { text: string }).text).toContain(
+        'Send the developer back',
+      )
+    }
+    vi.mocked(runChild).mockImplementationOnce(failing)
+    const result = (await session.tool('task_review', {})).content[0] as { text: string }
+
+    const question = 'T1 failed its review 3 times in a row; how should it go on? task_show T1 has its reviews.'
+    expect(result.text).toContain('so the coordinator was asked how it should go on. End your run now')
+    expect(readState(store).tasks['T1']?.claim?.question).toBe(question)
+    expect(readState(store).tasks['T1']?.log.at(-1)?.event).toBe(`asked: ${question}`)
+    const [mail] = mailToCoordinator()
+    expect(mail?.wake).toBe(true)
+    expect(mail?.body).toContain(`T1 asks: ${question}`)
+    await expect(session.tool('task_develop', { instructions: 'Write hi' })).rejects.toThrow(
+      "T1 waits for the coordinator's answer",
+    )
     expect(await boundary(session, 'agent_before_settle', { outcome: 'completed' })).toBeUndefined()
   })
 

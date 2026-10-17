@@ -22,7 +22,7 @@ describe('guard', () => {
       claimRoot(
         state,
         'T1',
-        { sessionId: 'executor', pid: 1, workspace: { name: 'task-T1', path: '/ws/T1' }, restarts: 0 },
+        { sessionId: 'executor', pid: 1, workspace: { name: 'task-T1', path: '/ws/T1' }, sessions: 0 },
         2,
       )
     })
