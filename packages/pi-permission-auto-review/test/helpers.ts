@@ -43,6 +43,7 @@ export function permissionDetails(overrides: Partial<PromptPermissionDetails> = 
         matchedSpelling: null,
         commandContext: null,
         executedUnit: null,
+        decidingPath: null,
       },
       evidence: [{ label: 'command', text: 'pnpm publish', detail: null }],
       annotations: [],

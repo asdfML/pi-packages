@@ -17,7 +17,7 @@ pi install npm:@gotgenes/pi-permission-system
 pi install npm:@mzwing/pi-permission-auto-review
 ```
 
-Requires Pi 1.2.0 or later and `@gotgenes/pi-permission-system` 37.x – 40.x.
+Requires Pi 1.3.0 or later and `@gotgenes/pi-permission-system` 37.x – 41.x.
 
 ## Usage
 
