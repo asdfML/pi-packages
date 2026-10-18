@@ -1,5 +1,31 @@
 # @mzwing/pi-task-governor
 
+## 0.5.0
+
+### Minor Changes
+
+- [`b8fb3f5`](https://github.com/mzwing/pi-packages/commit/b8fb3f544038e7adbd1b87b09a41822b19ccc9a4) Thanks [@mzwing](https://github.com/mzwing)! - feat(pi-task-governor): let the coordinator revise a task's brief
+  
+  `task_revise` rewrites the parts of a brief it is given, for a task no executor is working on: a root task that waits to start or for its sign-off, or a task whose executor waits for the coordinator's answer or stalled. A task left waiting for an answer goes on in a fresh executor session on the new brief, and one waiting for its sign-off goes back to be reviewed against it.
+
+- [`ae40b3b`](https://github.com/mzwing/pi-packages/commit/ae40b3b3da0d34d2ba1f92f813bc2ab243e950ef) Thanks [@mzwing](https://github.com/mzwing)! - feat(pi-task-governor): show the coordinator the tasks that overlap and the tasks that wait when it signs a task off
+  
+  The sign-off request lists the other tasks of the same bookmark that change files the task changes, both those merged since it started and those still open, and the declared tasks that wait for it, whose briefs the coordinator can revise before they start.
+
+- [`3f58971`](https://github.com/mzwing/pi-packages/commit/3f58971628d1b6fba22db21ea3ba5f453a70dd52) Thanks [@mzwing](https://github.com/mzwing)! - feat(pi-task-governor): bring a task back to the coordinator when its reviews keep failing or its sessions run on
+  
+  A task whose review fails three times in a row asks the coordinator how to go on, and its executor stops until the answer comes. Between the coordinator's words on a task, which are its answers, revised briefs, approvals and refusals, the task gets three executor sessions, and it stalls once the third ends, whether that session stopped early or handed off. Before, only sessions that stopped early counted, so a task whose sessions kept handing off ran on without the coordinator hearing of it.
+
+### Patch Changes
+
+- [`386b523`](https://github.com/mzwing/pi-packages/commit/386b523873f189bad5c8a95b2c81b7996fd3784b) Thanks [@mzwing](https://github.com/mzwing)! - chore: accept Pi 1.3 and @gotgenes/pi-permission-system v41
+  
+  The Pi peer range moves to `^1.3.0`, the line these packages are built and tested against. From 1.3.0 on, a session that pi-session-hub's `session_spawn` continues with `resume` keeps its active tools instead of falling back to the default ones.
+  
+  pi-permission-auto-review accepts `@gotgenes/pi-permission-system` v41. Where v40 downgrades the reviewer's `allow` on every `path` and `external_directory` ask to `defer`, v41 lets it stand on a bash `external_directory` ask whose paths name nothing on disk, such as the spreadsheet cell in `officecli set data.xlsx /Sheet1/B1`. The license that marks such an ask reaches the reviewer with the rest of the request.
+- Updated dependencies [[`386b523`](https://github.com/mzwing/pi-packages/commit/386b523873f189bad5c8a95b2c81b7996fd3784b)]:
+  - @mzwing/pi-session-hub@0.3.1
+
 ## 0.4.0
 
 ### Minor Changes

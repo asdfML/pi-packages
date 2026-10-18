@@ -1,5 +1,15 @@
 # @mzwing/pi-model-info
 
+## 0.6.2
+
+### Patch Changes
+
+- [`386b523`](https://github.com/mzwing/pi-packages/commit/386b523873f189bad5c8a95b2c81b7996fd3784b) Thanks [@mzwing](https://github.com/mzwing)! - chore: accept Pi 1.3 and @gotgenes/pi-permission-system v41
+  
+  The Pi peer range moves to `^1.3.0`, the line these packages are built and tested against. From 1.3.0 on, a session that pi-session-hub's `session_spawn` continues with `resume` keeps its active tools instead of falling back to the default ones.
+  
+  pi-permission-auto-review accepts `@gotgenes/pi-permission-system` v41. Where v40 downgrades the reviewer's `allow` on every `path` and `external_directory` ask to `defer`, v41 lets it stand on a bash `external_directory` ask whose paths name nothing on disk, such as the spreadsheet cell in `officecli set data.xlsx /Sheet1/B1`. The license that marks such an ask reaches the reviewer with the rest of the request.
+
 ## 0.6.1
 
 ### Patch Changes
